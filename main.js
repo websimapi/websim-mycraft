@@ -22,6 +22,7 @@ document.body.appendChild(renderer.domElement);
 
 const loadingDiv = document.getElementById('loading');
 const blockSelectorDiv = document.getElementById('block-selector');
+const instructionsDiv = document.getElementById('instructions');
 
 // Lighting
 const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
@@ -55,6 +56,7 @@ controls.addEventListener('lock', () => {
     scene.add(controls.getObject());
     // Optionally hide block selector or other UI elements
     blockSelectorDiv.style.display = 'flex'; // Show block selector
+    instructionsDiv.style.display = 'none'; // Hide instructions
 });
 
 controls.addEventListener('unlock', () => {
@@ -63,6 +65,7 @@ controls.addEventListener('unlock', () => {
      scene.remove(controls.getObject());
      // Optionally show menu or other UI elements
      blockSelectorDiv.style.display = 'flex'; // Keep selector visible
+     instructionsDiv.style.display = 'block'; // Show instructions again
 });
 
 // Player movement state
