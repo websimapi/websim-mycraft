@@ -3,74 +3,87 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>MyCraft</title>
+    <!-- Using example styles for basic structure, might remove later -->
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/three@0.166.1/examples/css/main.css">
     <style>
-        body { margin: 0; overflow: hidden; background-color: #000; /* Fallback background */ }
+        body { margin: 0; overflow: hidden; background-color: #000; cursor: pointer; }
         canvas { display: block; }
         #block-selector {
             position: absolute;
-            bottom: 20px; /* Increased bottom margin */
+            bottom: 20px;
             left: 50%;
             transform: translateX(-50%);
             background: rgba(0,0,0,0.5);
             padding: 5px;
-            display: flex;
+            display: none; /* Start hidden, show on pointer lock */
             gap: 5px;
-            border-radius: 5px; /* Rounded corners */
-            z-index: 10; /* Ensure it's above canvas */
+            border-radius: 5px;
+            z-index: 10;
         }
         .block-option {
             width: 40px;
             height: 40px;
             border: 2px solid white;
             cursor: pointer;
-            box-sizing: border-box; /* Include border in size */
-            /* Removed texture background properties */
+            box-sizing: border-box;
+            background-size: cover; /* Just in case we add texture previews later */
+            image-rendering: pixelated; /* Keep block previews sharp if textures used */
         }
         .block-option.selected {
             border-color: yellow;
-            transform: scale(1.1); /* Make selected slightly larger */
+            transform: scale(1.1);
             box-shadow: 0 0 5px yellow;
         }
         #loading {
             position: absolute;
-            top: 50%;
+            top: 10px; /* Move to top */
             left: 50%;
-            transform: translate(-50%, -50%);
+            transform: translateX(-50%);
             color: white;
-            font-size: 2em;
+            font-size: 1.2em; /* Slightly smaller */
             text-align: center;
-            background-color: rgba(0, 0, 0, 0.7); /* Semi-transparent background */
-            padding: 10px 20px;
+            background-color: rgba(0, 0, 0, 0.7);
+            padding: 5px 15px; /* Smaller padding */
             border-radius: 8px;
-            z-index: 20; /* Ensure loading is on top */
+            z-index: 20;
             display: none; /* Start hidden */
         }
         .crosshair {
             position: absolute;
             top: 50%;
             left: 50%;
-            width: 2px; /* Thinner crosshair */
-            height: 10px;
-            background-color: white;
+            width: 4px; /* Slightly thicker */
+            height: 4px; /* Square dot */
+            background-color: rgba(255, 255, 255, 0.7); /* Semi-transparent white */
+            border-radius: 50%; /* Make it a circle/dot */
             transform: translate(-50%, -50%);
-            pointer-events: none; /* Don't interfere with clicks */
+            pointer-events: none;
             z-index: 10;
         }
-        .crosshair::before { /* Horizontal line */
-            content: '';
+        /* Instructions Text */
+        #instructions {
             position: absolute;
             top: 50%;
             left: 50%;
-            width: 10px;
-            height: 2px;
-            background-color: white;
             transform: translate(-50%, -50%);
+            color: white;
+            font-size: 1.5em;
+            text-align: center;
+            background-color: rgba(0, 0, 0, 0.6);
+            padding: 20px;
+            border-radius: 10px;
+            z-index: 15; /* Below loading, above crosshair/selector */
+            display: block; /* Initially visible */
+             pointer-events: none; /* Don't block clicks */
+        }
+         /* Hide instructions when pointer is locked */
+        body:has(canvas:focus) #instructions {
+             display: none;
         }
     </style>
 </head>
 <body>
-    <!-- Elements order matters less with absolute positioning, but keep logical -->
+    <div id="instructions">Click to Play</div>
     <div id="loading">Loading...</div>
     <div class="crosshair"></div>
     <div id="block-selector"></div>
@@ -85,7 +98,6 @@
         }
     }
     </script>
-    <!-- Ensure main.js is loaded last -->
     <script type="module" src="main.js"></script>
 <script defer src="https://static.cloudflareinsights.com/beacon.min.js/v8c78df7c7c0f484497ecbca7046644da1771523124516" integrity="sha512-8DS7rgIrAmghBFwoOTujcf6D9rXvH8xm8JQ1Ja01h9QX8EzXldiszufYa4IFfKdLUKTTrnSFXLDkUEOTrZQ8Qg==" data-cf-beacon='{"version":"2024.11.0","token":"4c6229722a6346bc8eb5cb0e5eae5d41","server_timing":{"name":{"cfCacheStatus":true,"cfEdge":true,"cfExtPri":true,"cfL4":true,"cfOrigin":true,"cfSpeedBrain":true},"location_startswith":null}}' crossorigin="anonymous"></script>
 </body>

@@ -11,7 +11,9 @@ const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x87ceeb); // Sky blue
 
 const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
-camera.position.set(0, 65, 0); // Start a bit lower, closer to potential ground
+// Start slightly higher to ensure we are above the initial ground
+camera.position.set(5, 65, 5); // Offset slightly from chunk center
+camera.lookAt(0, 50, 0); // Look towards the expected ground center
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
@@ -20,7 +22,6 @@ document.body.appendChild(renderer.domElement);
 
 const loadingDiv = document.getElementById('loading');
 const blockSelectorDiv = document.getElementById('block-selector');
-const blockSelectorUITexturePreview = document.getElementById('block-selector-texture');
 
 // Lighting
 const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
@@ -41,18 +42,27 @@ scene.add(directionalLight);
 
 // Controls
 const controls = new PointerLockControls(camera, document.body);
-scene.add(controls.getObject()); // Add the player camera to the scene
 
 document.addEventListener('click', () => {
-    controls.lock();
+    if (!controls.isLocked) { // Only lock if not already locked
+         controls.lock();
+    }
 });
 
 controls.addEventListener('lock', () => {
     console.log('Pointer locked');
+    // Add camera controller to scene when locked to make moveRight/moveForward work relative to look direction
+    scene.add(controls.getObject());
+    // Optionally hide block selector or other UI elements
+    blockSelectorDiv.style.display = 'flex'; // Show block selector
 });
 
 controls.addEventListener('unlock', () => {
     console.log('Pointer unlocked');
+     // Remove camera controller from scene when unlocked
+     scene.remove(controls.getObject());
+     // Optionally show menu or other UI elements
+     blockSelectorDiv.style.display = 'flex'; // Keep selector visible
 });
 
 // Player movement state
@@ -69,7 +79,7 @@ const movement = {
 
 const playerHeight = 1.8;
 const playerSpeed = 10.0;
-const jumpHeight = 1.0;
+const jumpHeight = 8.0; // Increased jump height slightly for effect
 const gravity = -30.0;
 
 document.addEventListener('keydown', (event) => {
@@ -102,35 +112,33 @@ document.addEventListener('keyup', (event) => {
 // Chunk constants
 const chunkSize = 16;
 const tileSize = 1;
-const tileTextureWidth = 256;
-const tileTextureHeight = 64;
 
 // Block types and textures
 const blockTypes = {
-    grass: { top: 0, bottom: 2, side: 1, color: 0x559944 }, // Added color fallback
-    dirt: { top: 2, bottom: 2, side: 2, color: 0x885522 },
-    stone: { top: 3, bottom: 3, side: 3, color: 0x888888 },
-    wood: { top: 4, bottom: 4, side: 5, color: 0x775533 },
-    leaves: { top: 6, bottom: 6, side: 6, color: 0x44aa44 },
-    sand: { top: 7, bottom: 7, side: 7, color: 0xeeeecc },
+    grass: { color: 0x559944 },
+    dirt: { color: 0x885522 },
+    stone: { color: 0x888888 },
+    wood: { color: 0x775533 }, // Placeholder wood color
+    leaves: { color: 0x44aa44 },
+    sand: { color: 0xeeeecc },
+    bedrock: { color: 0x444444, unbreakable: true }, // Added bedrock type
     // Add more block types here
 };
 const blockNames = Object.keys(blockTypes);
 let selectedBlock = blockNames[0]; // Default selection
 
-// Use MeshStandardMaterial without a map for now, allows for lighting
-const material = new THREE.MeshStandardMaterial({ vertexColors: true, side: THREE.DoubleSide }); // Use vertex colors
+// Use MeshStandardMaterial with vertex colors
+const material = new THREE.MeshStandardMaterial({ vertexColors: true, side: THREE.DoubleSide });
 
 // Noise generator
 const simplex = new SimplexNoise();
 
 // Chunk management
-const chunks = {};
-const chunkGeometryCache = {};
-const chunkMeshCache = {};
-const CHUNK_COLLECTION = 'chunk_v1';
-let chunkLoadQueue = [];
-let isLoadingChunk = false;
+const chunks = {}; 
+const chunkMeshCache = {}; 
+const CHUNK_COLLECTION = 'chunk_v2'; 
+let chunkLoadQueue = new Set(); 
+let isLoadingChunk = false; 
 
 function getChunkId(x, z) {
     return `${Math.floor(x / chunkSize)},${Math.floor(z / chunkSize)}`;
@@ -168,87 +176,65 @@ function generateChunkData(chunkX, chunkZ) {
             const worldX = startX + x;
             const worldZ = startZ + z;
 
-            // Simple flat grass plane for testing visibility quickly
-            const height = 50; // Flat plane at y=50
-            const key = `${x},${height},${z}`;
-            blocks[key] = { type: 'grass' };
-            // Stone below
-            for (let y=0; y < height; y++) {
-                 const stoneKey = `${x},${y},${z}`;
-                 blocks[stoneKey] = {type: 'stone'};
-            }
-             // Bedrock at y=0
-             const bedrockKey = `${x},0,${z}`;
-             blocks[bedrockKey] = { type: 'stone', unbreakable: true };
-
-            /* // Original noise generation - uncomment later if needed
-            const noiseVal = (simplex.noise2D(worldX * 0.01, worldZ * 0.01) + 1) / 2; // Normalize to 0-1
-            const height = Math.floor(noiseVal * 30) + 30; // Base terrain height 30-60
-
-            for (let y = 0; y < height; y++) {
-                const key = `${x},${y},${z}`;
-                if (y === height - 1 && y > 35) { // Grass on top layer above certain height
-                     blocks[key] = { type: 'grass' };
-                } else if (y > height - 5 && y > 35) { // Dirt below grass
-                    blocks[key] = { type: 'dirt' };
-                } else if (y <= 35 && y > 30) { // Sand near water level
-                     blocks[key] = { type: 'sand' };
-                }
-                else { // Stone below
-                    blocks[key] = { type: 'stone' };
-                }
-            }
-             // Bedrock at y=0
-             const bedrockKey = `${x},0,${z}`;
-             blocks[bedrockKey] = { type: 'stone', unbreakable: true }; // Using stone texture for now
-            */
+            // Flat plane for testing
+             const height = 50;
+             blocks[`${x},${height},${z}`] = { type: 'grass' };
+             for (let y = 1; y < height; y++) {
+                 blocks[`${x},${y},${z}`] = { type: 'stone' };
+             }
+            // Bedrock at y=0
+            blocks[`${x},0,${z}`] = { type: 'bedrock' };
         }
     }
     return blocks;
 }
 
 function getBlock(worldX, worldY, worldZ) {
+     if (worldY < 0) return blockTypes.bedrock; // Treat below 0 as bedrock conceptually
+
     const { chunkX, chunkZ } = getChunkCoordinates(worldX, worldZ);
     const chunkId = `${chunkX},${chunkZ}`;
     const chunk = chunks[chunkId];
-    // If chunk or its blocks don't exist, return null (air)
+
     if (!chunk || !chunk.blocks) {
-        // Check if coordinates are within world generation bounds (e.g., y > 0)
-        if (worldY < 0) return { type: 'stone', unbreakable: true }; // Treat below 0 as bedrock conceptually
+        // We don't know what's there, assume air for geometry generation
         return null;
     }
 
     const blockKey = getBlockKeyInChunk(worldX, worldY, worldZ);
-    return chunk.blocks[blockKey] || null; // Return block or null if key doesn't exist
+    const blockData = chunk.blocks[blockKey];
+
+     // Return the block data itself, not just the type
+     // The geometry function will look up the type info (color etc)
+    return blockData || null; // Return block data object or null if air
 }
 
 // Create chunk geometry
 function createChunkGeometry(chunkX, chunkZ, chunkData) {
     const chunkId = `${chunkX},${chunkZ}`;
-    const chunkBlocks = chunkData.blocks || {};
+    // Use blocks from provided chunkData, default to empty if missing
+    const chunkBlocks = chunkData?.blocks ?? {};
     const geometry = new THREE.BufferGeometry();
     const positions = [];
     const normals = [];
-    // const uvs = []; // Not needed without texture map
-    const colors = []; // Added for vertex colors
+    const colors = [];
     const indices = [];
-    let index = 0;
 
     const startX = chunkX * chunkSize;
     const startZ = chunkZ * chunkSize;
-    const tempColor = new THREE.Color(); // For color conversion
+    const tempColor = new THREE.Color();
 
     for (const key in chunkBlocks) {
         const [lx, ly, lz] = key.split(',').map(Number);
-        const block = chunkBlocks[key];
-        if (!block) continue;
+        const blockData = chunkBlocks[key]; // The object { type: '...' }
+        if (!blockData || !blockData.type) continue; // Skip if block is malformed
 
-        const blockInfo = blockTypes[block.type];
+        const blockInfo = blockTypes[blockData.type];
         if (!blockInfo) {
-             console.warn(`Unknown block type: ${block.type} at ${key}`);
+             console.warn(`Unknown block type: ${blockData.type} at ${key} in chunk ${chunkId}`);
              continue;
         }
-        const blockColor = new THREE.Color(blockInfo.color || 0xffffff); // Use defined color or white
+        const blockColor = new THREE.Color(blockInfo.color || 0xffffff);
 
 
         const worldX = startX + lx;
@@ -256,6 +242,7 @@ function createChunkGeometry(chunkX, chunkZ, chunkData) {
         const worldZ = startZ + lz;
 
         // Check neighbors - IMPORTANT: Must check across chunk boundaries
+        // getBlock now returns the block data object { type: ... } or null
         const neighbors = {
             nx: getBlock(worldX - 1, worldY, worldZ),
             px: getBlock(worldX + 1, worldY, worldZ),
@@ -265,7 +252,7 @@ function createChunkGeometry(chunkX, chunkZ, chunkData) {
             pz: getBlock(worldX, worldY, worldZ + 1),
         };
 
-        // Simpler face definitions since UVs are not needed
+        // Simplified face definitions
          const faces = [
             { dir: [-1, 0, 0], corners: [ [0, 1, 0], [0, 0, 0], [0, 1, 1], [0, 0, 1] ], neighbor: neighbors.nx }, // nx
             { dir: [ 1, 0, 0], corners: [ [1, 1, 1], [1, 0, 1], [1, 1, 0], [1, 0, 0] ], neighbor: neighbors.px }, // px
@@ -276,225 +263,253 @@ function createChunkGeometry(chunkX, chunkZ, chunkData) {
         ];
 
         for (const { dir, corners, neighbor } of faces) {
-             // Only render face if neighbor is air (null)
-            if (!neighbor) {
+             // Only render face if neighbor is air (null) or maybe transparent later
+            if (!neighbor) { // Basic check: neighbor is null (air)
                 const ndx = positions.length / 3;
                 for (const pos of corners) {
                     positions.push(pos[0] + worldX, pos[1] + worldY, pos[2] + worldZ);
                     normals.push(...dir);
-                    // Apply vertex color - slightly darken based on normal for subtle shading
+                    // Apply vertex color - slightly darken based on normal
                     tempColor.copy(blockColor);
                     if (dir[1] === 1) tempColor.multiplyScalar(1.0); // Top face brightest
                     else if (dir[1] === -1) tempColor.multiplyScalar(0.7); // Bottom face darkest
                     else tempColor.multiplyScalar(0.85); // Side faces
                     colors.push(tempColor.r, tempColor.g, tempColor.b);
                 }
-
-                // uvs.push(0, 0, 1, 0, 0, 1, 1, 1); // Dummy UVs if needed, but vertexColors is used
-
                 indices.push(
                     ndx, ndx + 1, ndx + 2,
                     ndx + 2, ndx + 1, ndx + 3,
                 );
-                 index += 6; // 2 triangles per face
             }
         }
     }
 
     if (positions.length === 0) {
          // console.log(`Chunk ${chunkId} generated no geometry.`);
-         return null; // Return null if no geometry to avoid errors
+         return null; // Return null if no geometry
      }
 
     geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
     geometry.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
-    // geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2)); // No UVs needed now
-    geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3)); // Add color attribute
+    geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
     geometry.setIndex(indices);
-    geometry.computeBoundingSphere(); // Important for frustum culling
+    geometry.computeBoundingSphere();
 
-    chunkGeometryCache[chunkId] = geometry;
     // console.log(`Generated geometry for chunk ${chunkId} with ${positions.length / 3} vertices.`);
     return geometry;
 }
 
 // Function to load or generate a chunk
-async function loadOrGenerateChunk(chunkX, chunkZ) {
+async function queueChunkLoad(chunkX, chunkZ) {
     const chunkId = `${chunkX},${chunkZ}`;
-    // Prevent queuing if already loaded, being processed by this client, or actively being loaded
-     if (chunks[chunkId] || chunkLoadQueue.includes(chunkId) || isLoadingChunk && chunkLoadQueue[0] === chunkId) {
+    // Prevent queuing if already loaded or already in queue
+     if (chunks[chunkId] || chunkLoadQueue.has(chunkId)) {
         return;
     }
 
     // console.log(`Queueing chunk load: ${chunkId}`);
-    chunkLoadQueue.push(chunkId);
-    if (!isLoadingChunk) { // Start processing immediately if queue was empty
-        processChunkQueue();
+    chunkLoadQueue.add(chunkId);
+    // Trigger processing if not already running
+    if (!isLoadingChunk) {
+        // Use setTimeout to yield briefly, allowing other tasks (like rendering)
+        setTimeout(processChunkQueue, 0);
     }
 }
 
 async function processChunkQueue() {
-    if (chunkLoadQueue.length === 0) {
+    if (chunkLoadQueue.size === 0) {
          isLoadingChunk = false;
-         // console.log("Chunk queue empty.");
          updateLoadingStatus();
+         // console.log("Chunk queue empty.");
         return;
     }
 
     isLoadingChunk = true;
-    const chunkId = chunkLoadQueue[0]; // Peek at the front
+    // Get *one* chunk ID from the Set to process
+    const chunkId = chunkLoadQueue.values().next().value;
+    chunkLoadQueue.delete(chunkId); // Remove it immediately
+
     const [chunkX, chunkZ] = chunkId.split(',').map(Number);
-    // console.log(`Processing chunk: ${chunkId}`);
+    // console.log(`Processing chunk: ${chunkId}. Remaining in queue: ${chunkLoadQueue.size}`);
     updateLoadingStatus();
 
-
-    // Try to get from DB
     let chunkData = null;
-    try {
-         chunkData = await room.collection(CHUNK_COLLECTION).get(chunkId);
-    } catch(e) {
-        console.warn(`Error fetching chunk ${chunkId} from DB (might not exist yet):`, e);
-        // Proceed to generation if fetch failed (e.g., network error or not found)
-    }
+    let source = 'cache'; // Track where data came from
 
-
-    if (!chunkData || !chunkData.blocks) { // If not in DB or has no blocks field
-        // console.log(`Chunk ${chunkId} not found or invalid in DB, generating...`);
-        const generatedBlocks = generateChunkData(chunkX, chunkZ);
-        try {
-            // Use create which handles potential race conditions better if id is provided
-             chunkData = await room.collection(CHUNK_COLLECTION).create({
-                id: chunkId,
-                chunkX: chunkX,
-                chunkZ: chunkZ,
-                blocks: generatedBlocks,
-            });
-            console.log(`Generated and saved chunk: ${chunkId}`);
-        } catch (e) {
-            if (e && e.message && e.message.includes('already exists')) {
-                 console.log(`Chunk ${chunkId} already exists (race condition?), fetching again.`);
-                 try {
-                    chunkData = await room.collection(CHUNK_COLLECTION).get(chunkId);
-                 } catch (fetchError) {
-                     console.error(`Error fetching chunk ${chunkId} after creation conflict:`, fetchError);
-                     chunkData = null; // Ensure it's null if fetch fails
-                 }
-             } else {
-                 console.error(`Error creating chunk ${chunkId}:`, e);
-                 chunkData = null; // Ensure it's null if creation fails
-             }
-        }
-
+    // 1. Check local cache first (redundant with initial check in queueChunkLoad, but safe)
+    if (chunks[chunkId]) {
+        chunkData = chunks[chunkId];
     } else {
-        // console.log(`Loaded chunk from DB: ${chunkId}`);
+        // 2. Try to get from DB
+        try {
+             source = 'db';
+             chunkData = await room.collection(CHUNK_COLLECTION).get(chunkId);
+              if (!chunkData?.blocks) { // Check if DB data is valid
+                // console.log(`Chunk ${chunkId} from DB is invalid or missing blocks.`);
+                chunkData = null; // Treat as not found
+            } else {
+                 // console.log(`Loaded chunk from DB: ${chunkId}`);
+            }
+        } catch (e) {
+            // Log error only if it's not a "not found" type error (depends on DB implementation)
+            // console.warn(`Chunk ${chunkId} not found in DB (expected for new chunks):`, e.message);
+            chunkData = null; // Ensure it's null if fetch failed or not found
+        }
     }
 
+    // 3. If not found in cache or DB, generate it
+    if (!chunkData) {
+        source = 'generated';
+        // console.log(`Generating chunk data for ${chunkId}...`);
+        const generatedBlocks = generateChunkData(chunkX, chunkZ);
+        const newChunkRecord = {
+            id: chunkId,
+            chunkX: chunkX,
+            chunkZ: chunkZ,
+            blocks: generatedBlocks,
+        };
+        // Store locally immediately
+        chunks[chunkId] = newChunkRecord;
+        chunkData = newChunkRecord; // Use the newly generated data
 
-    // Remove the processed chunk ID from the front of the queue *after* processing attempt
-    chunkLoadQueue.shift();
+        // Attempt to save to DB asynchronously (don't wait for it)
+        room.collection(CHUNK_COLLECTION).create(newChunkRecord)
+            .then(() => {
+                // console.log(`Saved generated chunk ${chunkId} to DB.`);
+            })
+            .catch(async (e) => {
+                // Handle potential race condition where another client created it first
+                if (e && e.message && e.message.includes('already exists')) {
+                    // console.log(`Chunk ${chunkId} already exists in DB (race condition).`);
+                    // Optional: Fetch the DB version to ensure consistency, though local version might be fine.
+                    // try { chunks[chunkId] = await room.collection(CHUNK_COLLECTION).get(chunkId) } catch{}
+                } else {
+                    console.error(`Error saving generated chunk ${chunkId} to DB:`, e);
+                    // Should we revert the local generation? Maybe not, prefer local playability.
+                }
+            });
+    }
 
-    if (chunkData && chunkData.blocks) {
+    // Update local cache (might be redundant if generated, but ensures consistency)
+    if (chunkData) {
         chunks[chunkId] = chunkData;
-        // console.log(`Updating mesh for chunk ${chunkId}`);
-        updateChunkMesh(chunkX, chunkZ, chunkData);
+        // Update mesh only if the data is valid and came from DB or generation
+        if (chunkData.blocks && (source === 'db' || source === 'generated')) {
+            // console.log(`Updating mesh for chunk ${chunkId} (Source: ${source})`);
+            updateChunkMesh(chunkX, chunkZ, chunkData);
+        } else if (source === 'cache') {
+            // If from cache, the mesh should ideally already exist unless unloaded.
+             // Ensure mesh exists if it's supposed to be visible (logic handled in updateVisibleChunks)
+             // console.log(`Chunk ${chunkId} loaded from cache. Mesh update handled by visibility check.`);
+        }
     } else {
         console.error(`Failed to load or generate valid chunk data for ${chunkId}.`);
     }
 
-    isLoadingChunk = false;
-    // Process next chunk in the queue without delay for faster loading
-    // Use requestAnimationFrame to yield to the browser briefly
-    requestAnimationFrame(processChunkQueue);
-     // setTimeout(processChunkQueue, 0); // Or setTimeout 0
+    // Process the next chunk in the queue almost immediately
+    isLoadingChunk = false; // Allow next iteration to start
+    if (chunkLoadQueue.size > 0) {
+         setTimeout(processChunkQueue, 0); // Yield briefly before processing next
+    } else {
+        updateLoadingStatus(); // Ensure loading status is hidden if queue is now empty
+        // console.log("Chunk queue finished processing.");
+    }
 }
 
 function updateChunkMesh(chunkX, chunkZ, chunkData) {
     const chunkId = `${chunkX},${chunkZ}`;
 
      // Remove existing mesh if it exists
-     if (chunkMeshCache[chunkId]) {
-        scene.remove(chunkMeshCache[chunkId]);
-        chunkMeshCache[chunkId].geometry.dispose(); // Dispose old geometry
+     const existingMesh = chunkMeshCache[chunkId];
+     if (existingMesh) {
+        scene.remove(existingMesh);
+        existingMesh.geometry.dispose(); // Dispose old geometry
         delete chunkMeshCache[chunkId];
-        // Don't delete geometry cache immediately, createChunkGeometry will overwrite
     }
 
-
     const geometry = createChunkGeometry(chunkX, chunkZ, chunkData);
-    // Ensure geometry is valid and has vertices before creating a mesh
-    if (geometry && geometry.attributes.position && geometry.attributes.position.count > 0) {
+
+    if (geometry) {
         const mesh = new THREE.Mesh(geometry, material);
         mesh.castShadow = true;
         mesh.receiveShadow = true;
-        mesh.userData = { chunkId }; // Store chunkId for potential future use
+        mesh.userData = { chunkId };
         scene.add(mesh);
         chunkMeshCache[chunkId] = mesh;
-        // console.log(`Added mesh for chunk ${chunkId} to scene.`);
+        // console.log(`Added/Updated mesh for chunk ${chunkId} with ${geometry.attributes.position.count} vertices.`);
     } else {
-         // console.log(`Chunk ${chunkId} resulted in no geometry or empty geometry, skipping mesh creation.`);
-          // Ensure no old mesh lingers if new geometry is null/empty
-         if (chunkMeshCache[chunkId]) {
-             scene.remove(chunkMeshCache[chunkId]);
-             delete chunkMeshCache[chunkId];
-         }
+         // console.log(`Chunk ${chunkId} resulted in no geometry, mesh not created/updated.`);
     }
 }
 
 // Render distance
-const renderDistance = 4; // Chunks in each direction (reduced for faster initial load)
+const renderDistance = 4; // Chunks in each direction
+
+// Store the last player chunk coordinates to avoid unnecessary checks
+let lastPlayerChunkX = null;
+let lastPlayerChunkZ = null;
 
 function updateVisibleChunks() {
-    const playerPos = controls.getObject().position;
-     // Handle potential NaN positions early on
-    if (isNaN(playerPos.x) || isNaN(playerPos.z)) {
-        console.warn("Player position is NaN, skipping chunk update.");
-        return;
-    }
+    const playerPos = controls.getObject().position; // Camera position is player position
 
     const playerChunkX = Math.floor(playerPos.x / chunkSize);
     const playerChunkZ = Math.floor(playerPos.z / chunkSize);
 
-    const previouslyVisible = new Set(Object.keys(chunkMeshCache));
-    const currentlyNeeded = new Set(); // Renamed from currentlyVisible
+    // Only update if the player has moved to a new chunk
+    if (playerChunkX === lastPlayerChunkX && playerChunkZ === lastPlayerChunkZ) {
+        return;
+    }
+     // console.log(`Player moved to chunk ${playerChunkX}, ${playerChunkZ}. Updating visible chunks.`);
+    lastPlayerChunkX = playerChunkX;
+    lastPlayerChunkZ = playerChunkZ;
 
-    // Determine needed chunks
+    const previouslyVisible = new Set(Object.keys(chunkMeshCache));
+    const currentlyNeeded = new Set();
+
+    // Determine needed chunks and queue loading
     for (let x = playerChunkX - renderDistance; x <= playerChunkX + renderDistance; x++) {
         for (let z = playerChunkZ - renderDistance; z <= playerChunkZ + renderDistance; z++) {
             const chunkId = `${x},${z}`;
              currentlyNeeded.add(chunkId);
-            // If chunk data not loaded AND not already queued AND not currently being processed
-            if (!chunks[chunkId] && !chunkLoadQueue.includes(chunkId) && !(isLoadingChunk && chunkLoadQueue[0] === chunkId)) {
-                loadOrGenerateChunk(x, z); // Queue it for loading/generation
-            } else if (chunks[chunkId] && !chunkMeshCache[chunkId]) {
-                 // Data is loaded, but mesh isn't visible, maybe it was unloaded? Recreate mesh.
-                 // console.log(`Recreating mesh for already loaded chunk: ${chunkId}`);
-                 updateChunkMesh(x, z, chunks[chunkId]);
+
+            // Queue loading only if data isn't loaded locally
+            if (!chunks[chunkId]) {
+                queueChunkLoad(x, z); // Use the queueing function
             }
+            // Mesh creation/update is handled when data is processed or by subscription
         }
     }
 
      // Unload meshes for chunks that are no longer needed
     previouslyVisible.forEach(chunkId => {
         if (!currentlyNeeded.has(chunkId)) {
-            if (chunkMeshCache[chunkId]) {
+            const mesh = chunkMeshCache[chunkId];
+            if (mesh) {
                 // console.log(`Unloading mesh for chunk: ${chunkId}`);
-                scene.remove(chunkMeshCache[chunkId]);
-                 // Consider disposing geometry here if memory becomes an issue,
-                 // but keeping it cached might speed up re-entering the area.
-                 // chunkMeshCache[chunkId].geometry.dispose();
-                 // delete chunkGeometryCache[chunkId];
+                scene.remove(mesh);
+                mesh.geometry.dispose(); // Dispose geometry when unloading mesh
                 delete chunkMeshCache[chunkId];
-                 // Keep the chunk data in `chunks` cache
+                // Keep the chunk *data* in `chunks` cache for faster reload if needed
             }
         }
     });
+
+    // Create meshes for chunks that are needed, loaded, but not currently meshed
+     currentlyNeeded.forEach(chunkId => {
+         if (chunks[chunkId] && !chunkMeshCache[chunkId]) {
+             const { chunkX, chunkZ } = getChunkCoordinatesFromId(chunkId);
+             // console.log(`Creating mesh for newly visible loaded chunk: ${chunkId}`);
+             updateChunkMesh(chunkX, chunkZ, chunks[chunkId]);
+         }
+     });
+
 
     updateLoadingStatus(); // Update UI based on queue length
 }
 
 function updateLoadingStatus() {
      if (loadingDiv) {
-        const queueSize = chunkLoadQueue.length + (isLoadingChunk ? 1 : 0);
+        const queueSize = chunkLoadQueue.size + (isLoadingChunk ? 1 : 0); // Add 1 if a chunk is actively processing
         if (queueSize > 0) {
             loadingDiv.style.display = 'block';
             loadingDiv.textContent = `Loading Chunks... (${queueSize} remaining)`;
@@ -506,74 +521,76 @@ function updateLoadingStatus() {
 
 // Block placement and removal logic
 const raycaster = new THREE.Raycaster();
-const mouse = new THREE.Vector2(); // Not used with pointer lock, but kept for structure
 
 window.addEventListener('mousedown', (event) => {
      if (!controls.isLocked) return;
 
-
     raycaster.setFromCamera({ x: 0, y: 0 }, camera); // Raycast from center of screen
-    // Ensure chunk meshes are intersected
     const meshesToIntersect = Object.values(chunkMeshCache);
-    if (meshesToIntersect.length === 0) return; // Don't raycast if no meshes exist
+    if (meshesToIntersect.length === 0) return;
 
     const intersects = raycaster.intersectObjects(meshesToIntersect, false);
 
-
     if (intersects.length > 0) {
         const intersection = intersects[0];
-         // Check distance to prevent modifying blocks too far away
-         if (intersection.distance > 6) {
-             console.log("Too far to modify block.");
-             return;
-         }
+         if (intersection.distance > 6) return; // Max reach distance
 
         const point = intersection.point;
-        const normal = intersection.face.normal.clone().normalize(); // Ensure it's normalized
+         // Use the face normal to determine placement/removal side
+        const normal = intersection.face.normal.clone(); //.normalize(); // Already normalized?
 
 
-        // Calculate voxel coordinates based on click type
         let voxelPos;
         if (event.button === 0) { // Left click: Remove block
+            // Move slightly *into* the block face before flooring
             voxelPos = getVoxelCoordinates(
-                point.x - normal.x * 0.01, // Move slightly inside the clicked face
-                point.y - normal.y * 0.01,
-                point.z - normal.z * 0.01
+                point.x - normal.x * 0.5, // Move half a block unit inwards
+                point.y - normal.y * 0.5,
+                point.z - normal.z * 0.5
             );
-             // console.log("Removing block at:", voxelPos);
-             modifyBlock(voxelPos.x, voxelPos.y, voxelPos.z, null); // Remove block
+             // console.log("Attempting remove at:", voxelPos);
+             modifyBlock(voxelPos.x, voxelPos.y, voxelPos.z, null);
         } else if (event.button === 2) { // Right click: Place block
+             // Move slightly *out* from the block face before flooring
              voxelPos = getVoxelCoordinates(
-                point.x + normal.x * 0.01, // Move slightly outside the clicked face
-                point.y + normal.y * 0.01,
-                point.z + normal.z * 0.01
+                point.x + normal.x * 0.5, // Move half a block unit outwards
+                point.y + normal.y * 0.5,
+                point.z + normal.z * 0.5
             );
-             // console.log("Placing block at:", voxelPos, "Type:", selectedBlock);
+             // console.log("Attempting place at:", voxelPos, "Type:", selectedBlock);
 
-             // Basic collision check: Don't place block inside player
+             // Collision check: Prevent placing inside player's bounding box
             const playerPos = controls.getObject().position;
-             // Check both the feet and head positions of the player capsule
-             const playerFeetY = playerPos.y - playerHeight / 2;
-             const playerHeadY = playerPos.y + playerHeight / 2;
-             const playerVoxelFoot = getVoxelCoordinates(playerPos.x, playerFeetY + 0.1, playerPos.z); // Check slightly above feet
-             const playerVoxelHead = getVoxelCoordinates(playerPos.x, playerHeadY - 0.1, playerPos.z); // Check slightly below head
+            const playerMin = { x: playerPos.x - 0.4, y: playerPos.y - playerHeight / 2, z: playerPos.z - 0.4 };
+            const playerMax = { x: playerPos.x + 0.4, y: playerPos.y + playerHeight / 2, z: playerPos.z + 0.4 };
 
+             const blockCenter = { x: voxelPos.x + 0.5, y: voxelPos.y + 0.5, z: voxelPos.z + 0.5 };
 
-            if ( (voxelPos.x === playerVoxelFoot.x && voxelPos.y === playerVoxelFoot.y && voxelPos.z === playerVoxelFoot.z) ||
-                 (voxelPos.x === playerVoxelHead.x && voxelPos.y === playerVoxelHead.y && voxelPos.z === playerVoxelHead.z) )
-                 {
+             // Simple AABB check (block vs player)
+            if (blockCenter.x + 0.5 > playerMin.x && blockCenter.x - 0.5 < playerMax.x &&
+                blockCenter.y + 0.5 > playerMin.y && blockCenter.y - 0.5 < playerMax.y &&
+                blockCenter.z + 0.5 > playerMin.z && blockCenter.z - 0.5 < playerMax.z)
+             {
                  console.log("Cannot place block inside player");
                  return;
-            }
+             }
 
-
-            modifyBlock(voxelPos.x, voxelPos.y, voxelPos.z, { type: selectedBlock }); // Place selected block
+            modifyBlock(voxelPos.x, voxelPos.y, voxelPos.z, { type: selectedBlock });
         }
     }
 });
 
-async function modifyBlock(worldX, worldY, worldZ, newBlock) {
-     if (worldY < 0) return; // Cannot modify below y=0
+async function modifyBlock(worldX, worldY, worldZ, newBlockData) {
+     // Ensure coordinates are integers
+     worldX = Math.floor(worldX);
+     worldY = Math.floor(worldY);
+     worldZ = Math.floor(worldZ);
+
+
+     if (worldY < 0) {
+         console.log("Cannot modify blocks below Y=0");
+         return; // Cannot modify below y=0
+     }
 
 
     const { chunkX, chunkZ } = getChunkCoordinates(worldX, worldZ);
@@ -582,66 +599,68 @@ async function modifyBlock(worldX, worldY, worldZ, newBlock) {
 
 
     let chunkData = chunks[chunkId];
-    // If chunk data isn't loaded locally yet, try to fetch it before modifying
+    // If chunk data isn't loaded locally, modification is impossible (shouldn't happen if raycast hit it)
     if (!chunkData) {
-        console.log(`Chunk ${chunkId} not loaded locally, attempting fetch before modification.`);
-        try {
-            chunkData = await room.collection(CHUNK_COLLECTION).get(chunkId);
-            if (chunkData) {
-                chunks[chunkId] = chunkData; // Store fetched data
-            } else {
-                 console.error(`Attempted to modify non-existent chunk: ${chunkId}`);
-                return; // Chunk doesn't exist in DB either
-            }
-        } catch (e) {
-            console.error(`Error fetching chunk ${chunkId} for modification:`, e);
-            return; // Failed to fetch
-        }
+        console.error(`Attempted to modify non-loaded chunk: ${chunkId}. This shouldn't happen.`);
+        // Maybe try to fetch it? But optimistic update needs immediate data.
+         try {
+             chunkData = await room.collection(CHUNK_COLLECTION).get(chunkId);
+             if (!chunkData) {
+                  console.error(`Chunk ${chunkId} not found in DB either.`);
+                  return;
+             }
+             chunks[chunkId] = chunkData; // Cache it
+         } catch(e) {
+              console.error(`Error fetching chunk ${chunkId} during modification attempt:`, e);
+              return;
+         }
     }
 
      // Ensure blocks object exists
      if (!chunkData.blocks) {
+        console.warn(`Chunk ${chunkId} loaded without a 'blocks' object. Initializing.`);
         chunkData.blocks = {};
      }
 
+    const existingBlockData = chunkData.blocks[blockKey];
+    const existingBlockType = existingBlockData ? blockTypes[existingBlockData.type] : null;
 
-     // Check if block is unbreakable
-    const existingBlock = chunkData.blocks[blockKey];
-     // Can't break bedrock (y=0) or explicitly unbreakable blocks
-    if ((worldY === 0 || (existingBlock && existingBlock.unbreakable)) && newBlock === null) {
-        console.log("Cannot break unbreakable block or bedrock");
+
+     // --- Pre-modification Checks ---
+    // Prevent breaking unbreakable blocks
+    if (newBlockData === null && existingBlockType?.unbreakable) {
+        console.log("Cannot break unbreakable block.");
+        return;
+    }
+     // Prevent placing the exact same block type again
+    if (newBlockData && existingBlockData?.type === newBlockData.type) {
+        // console.log("Block of same type already exists.");
+        return;
+    }
+     // Prevent deleting air
+     if (newBlockData === null && !existingBlockData) {
+        // console.log("Block is already air.");
         return;
     }
 
 
-    // Optimistic update
-    const oldBlocks = { ...chunkData.blocks }; // Deep clone might be needed if block data becomes complex
-    const previousBlock = chunkData.blocks[blockKey]; // Store the specific block being changed
+    // --- Optimistic Update ---
+    const oldBlocksState = { ...chunkData.blocks }; // Shallow copy is enough if block data is simple
 
-    if (newBlock) {
-        // Avoid placing the exact same block again
-        if (existingBlock && existingBlock.type === newBlock.type) {
-            // console.log("Block already exists.");
-            return;
-        }
-        chunkData.blocks[blockKey] = newBlock;
+    if (newBlockData) {
+        chunkData.blocks[blockKey] = newBlockData;
     } else {
-         // Avoid deleting if already air
-        if (!existingBlock) {
-             // console.log("Block already air.");
-             return;
-         }
         delete chunkData.blocks[blockKey];
     }
 
-    console.log(`Optimistic update: ${newBlock ? 'Placing' : 'Removing'} block at ${blockKey} in ${chunkId}`);
-    updateChunkMesh(chunkX, chunkZ, chunkData); // Update local mesh immediately
+    console.log(`Optimistic update: ${newBlockData ? `Placed ${newBlockData.type}` : 'Removed block'} at ${blockKey} in ${chunkId}`);
+    updateChunkMesh(chunkX, chunkZ, chunkData); // Update local mesh
 
 
-     // Determine which neighbor chunks might need their meshes rebuilt due to boundary changes
-     const localX = THREE.MathUtils.euclideanModulo(Math.floor(worldX), chunkSize);
-     const localZ = THREE.MathUtils.euclideanModulo(Math.floor(worldZ), chunkSize);
-     const neighborsToUpdate = new Set(); // Use a Set to avoid duplicates
+     // Determine if neighbor chunks need mesh updates due to boundary changes
+     const localX = THREE.MathUtils.euclideanModulo(worldX, chunkSize);
+     const localZ = THREE.MathUtils.euclideanModulo(worldZ, chunkSize);
+     const neighborsToUpdate = new Set();
      if (localX === 0) neighborsToUpdate.add(`${chunkX - 1},${chunkZ}`);
      if (localX === chunkSize - 1) neighborsToUpdate.add(`${chunkX + 1},${chunkZ}`);
      if (localZ === 0) neighborsToUpdate.add(`${chunkX},${chunkZ - 1}`);
@@ -650,31 +669,37 @@ async function modifyBlock(worldX, worldY, worldZ, newBlock) {
 
      neighborsToUpdate.forEach((neighborId) => {
          const neighborData = chunks[neighborId];
-         if (neighborData && chunkMeshCache[neighborId]) { // Update only if loaded and mesh exists
-            // console.log(`Updating neighbor mesh: ${neighborId}`);
-            const { chunkX: nx, chunkZ: nz } = getChunkCoordinatesFromId(neighborId);
-            updateChunkMesh(nx, nz, neighborData);
+         // Only update neighbor mesh if its data is loaded and the mesh exists (is visible)
+         if (neighborData && chunkMeshCache[neighborId]) {
+             // console.log(`Updating neighbor mesh due to boundary change: ${neighborId}`);
+             const { chunkX: nx, chunkZ: nz } = getChunkCoordinatesFromId(neighborId);
+             updateChunkMesh(nx, nz, neighborData);
          }
      });
 
 
-    // Update database
+    // --- Database Update ---
     try {
+        // Send only the updated blocks field
         await room.collection(CHUNK_COLLECTION).update(chunkId, {
-            blocks: chunkData.blocks, // Send the entire updated blocks object
+            blocks: chunkData.blocks,
         });
         // console.log(`Successfully updated chunk ${chunkId} in DB`);
     } catch (error) {
         console.error(`Failed to update chunk ${chunkId} in DB:`, error);
-        // Revert optimistic update
-        chunkData.blocks = oldBlocks; // Restore the entire previous block state for the chunk
-        updateChunkMesh(chunkX, chunkZ, chunkData); // Re-render the chunk with old data
-         // Also revert neighbor meshes if they were updated
+        // --- Revert Optimistic Update ---
+        console.log(`Reverting optimistic update for chunk ${chunkId}`);
+        chunkData.blocks = oldBlocksState; // Restore previous block state
+        updateChunkMesh(chunkX, chunkZ, chunkData); // Re-render the chunk
+
+         // Revert neighbor meshes if they were updated optimistically
          neighborsToUpdate.forEach((neighborId) => {
              const neighborData = chunks[neighborId];
-             if (neighborData && chunkMeshCache[neighborId]) {
+             if (neighborData && chunkMeshCache[neighborId]) { // Check mesh again
+                 console.log(`Reverting neighbor mesh update: ${neighborId}`);
                  const { chunkX: nx, chunkZ: nz } = getChunkCoordinatesFromId(neighborId);
-                 updateChunkMesh(nx, nz, neighborData); // Rerender neighbor with its (now correct) state
+                 // Use neighborData which should be correct (wasn't modified optimistically)
+                 updateChunkMesh(nx, nz, neighborData);
              }
          });
     }
@@ -682,86 +707,77 @@ async function modifyBlock(worldX, worldY, worldZ, newBlock) {
 
 // Subscribe to chunk updates from other players
 room.collection(CHUNK_COLLECTION).subscribe((updatedChunkList) => {
-    // No need to sort, just process all incoming updates
+     // console.log(`Received ${updatedChunkList.length} chunk updates from subscription.`);
     updatedChunkList.forEach(dbChunkData => {
         const chunkId = dbChunkData.id;
+         if (!dbChunkData.id || !dbChunkData.blocks) {
+             console.warn(`Received invalid chunk data from subscription for id: ${chunkId}`);
+             return;
+         }
         const localChunkData = chunks[chunkId];
 
-        // Check if the incoming data is actually different from local cache
-        // Simple JSON compare, might be slow for large chunks, consider hash comparison later
-         const hasChanged = !localChunkData || JSON.stringify(localChunkData.blocks) !== JSON.stringify(dbChunkData.blocks);
+        // Simple existence check or deep compare if necessary
+        // For now, assume any received update is newer/valid and update if different
+        const hasChanged = !localChunkData || JSON.stringify(localChunkData.blocks) !== JSON.stringify(dbChunkData.blocks);
 
         if (hasChanged) {
-             // console.log(`Received update for chunk: ${chunkId}`);
-             chunks[chunkId] = dbChunkData; // Update local cache with new data
+             // console.log(`Processing remote update for chunk: ${chunkId}`);
+             chunks[chunkId] = dbChunkData; // Update local cache
 
              const { chunkX, chunkZ } = getChunkCoordinatesFromId(chunkId);
 
-             // Only update mesh if the chunk is currently supposed to be visible
-            const playerChunkX = Math.floor(controls.getObject().position.x / chunkSize);
-            const playerChunkZ = Math.floor(controls.getObject().position.z / chunkSize);
-             const isVisible = Math.abs(chunkX - playerChunkX) <= renderDistance && Math.abs(chunkZ - playerChunkZ) <= renderDistance;
-
-            if (isVisible) {
+            // Update mesh only if the chunk is currently rendered (in mesh cache)
+            if (chunkMeshCache[chunkId]) {
                 // console.log(`Updating mesh for remotely modified visible chunk: ${chunkId}`);
                 updateChunkMesh(chunkX, chunkZ, dbChunkData);
 
-                 // Also force update neighbors if they are visible, as their geometry might depend on this chunk
+                 // Check and update visible neighbors because their geometry might change
                  const neighbors = [
                     `${chunkX-1},${chunkZ}`, `${chunkX+1},${chunkZ}`,
                     `${chunkX},${chunkZ-1}`, `${chunkX},${chunkZ+1}`
                  ];
                  neighbors.forEach(neighborId => {
-                      const neighborCoords = getChunkCoordinatesFromId(neighborId);
-                      const isNeighborVisible = Math.abs(neighborCoords.chunkX - playerChunkX) <= renderDistance && Math.abs(neighborCoords.chunkZ - playerChunkZ) <= renderDistance;
-                     // Update neighbor only if its data exists locally and it's currently visible
-                     if (chunks[neighborId] && isNeighborVisible) {
-                         // console.log(`Updating neighbor mesh ${neighborId} due to update in ${chunkId}`);
+                     // Update neighbor only if its data exists locally AND its mesh exists (is visible)
+                     if (chunks[neighborId] && chunkMeshCache[neighborId]) {
+                         // console.log(`Updating neighbor mesh ${neighborId} due to remote update in ${chunkId}`);
+                         const neighborCoords = getChunkCoordinatesFromId(neighborId);
                          updateChunkMesh(neighborCoords.chunkX, neighborCoords.chunkZ, chunks[neighborId]);
                      }
                  });
             }
+            // else { console.log(`Remote update for non-visible chunk ${chunkId}, cached data updated.`); }
         }
     });
 });
 
 function getChunkCoordinatesFromId(chunkId) {
      const parts = chunkId.split(',');
-     if (parts.length !== 2) {
+     // Basic validation
+     if (parts.length !== 2 || isNaN(parseInt(parts[0], 10)) || isNaN(parseInt(parts[1], 10))) {
          console.error(`Invalid chunkId format: ${chunkId}`);
-         return { chunkX: 0, chunkZ: 0 }; // Return default or throw error
+         return { chunkX: 0, chunkZ: 0 }; // Default or null might be better
      }
-     const chunkX = parseInt(parts[0], 10);
-     const chunkZ = parseInt(parts[1], 10);
-      if (isNaN(chunkX) || isNaN(chunkZ)) {
-         console.error(`Non-numeric coordinates in chunkId: ${chunkId}`);
-         return { chunkX: 0, chunkZ: 0 }; // Return default
-     }
-     return { chunkX, chunkZ };
+     return { chunkX: parseInt(parts[0], 10), chunkZ: parseInt(parts[1], 10) };
 }
 
 // Block Selector UI
 function setupBlockSelector() {
-     // Clear existing options if any
-    blockSelectorDiv.innerHTML = '';
+     blockSelectorDiv.innerHTML = ''; // Clear existing
     blockNames.forEach(name => {
+         // Skip bedrock in selector
+         if (name === 'bedrock') return;
+
         const option = document.createElement('div');
         option.classList.add('block-option');
-        // option.style.background = `url(textures.png)`; // Removed texture dependency
         const blockInfo = blockTypes[name];
-        option.style.backgroundColor = `#${new THREE.Color(blockInfo.color || 0xffffff).getHexString()}`; // Use block color
+         if (blockInfo.color) {
+             option.style.backgroundColor = `#${new THREE.Color(blockInfo.color).getHexString()}`;
+         } else {
+             option.style.backgroundColor = '#ffffff'; // Fallback color
+             option.textContent = '?'; // Indicate missing color
+         }
 
-        /* // Texture based selector - keep commented for now
-        const tileIndex = blockInfo.side; // Use the side texture for the preview
-        const tilesPerRow = 4;
-        const tileSizePx = 64; // Assuming texture is 256x64, each tile is 64x64
-        const xOffset = (tileIndex % tilesPerRow) * tileSizePx;
-        const yOffset = Math.floor(tileIndex / tilesPerRow) * tileSizePx;
-        option.style.backgroundPosition = `-${xOffset}px -${yOffset}px`;
-        option.style.backgroundSize = `${tileTextureWidth}px ${tileTextureHeight}px`;
-        */
-
-        option.title = name; // Add tooltip
+        option.title = name;
         option.dataset.blockType = name;
         option.addEventListener('click', () => {
             selectedBlock = name;
@@ -769,130 +785,154 @@ function setupBlockSelector() {
         });
         blockSelectorDiv.appendChild(option);
     });
-    updateSelectorUI(); // Set initial selection style
+    updateSelectorUI(); // Highlight default selection
 }
 
 function updateSelectorUI() {
     const options = blockSelectorDiv.querySelectorAll('.block-option');
     options.forEach(opt => {
-        if (opt.dataset.blockType === selectedBlock) {
-            opt.classList.add('selected');
-        } else {
-            opt.classList.remove('selected');
-        }
+        opt.classList.toggle('selected', opt.dataset.blockType === selectedBlock);
     });
 }
 
 // Collision Detection Raycasters
-const downRaycaster = new THREE.Raycaster(new THREE.Vector3(), new THREE.Vector3(0, -1, 0), 0, playerHeight / 2 + 0.1);
+const collisionRays = [
+    new THREE.Raycaster(new THREE.Vector3(), new THREE.Vector3(0, -1, 0), 0, playerHeight / 2 + 0.1), // Down
+    // Add rays for horizontal collision later if needed
+];
 
 function checkCollisions(delta) {
-     const playerPosition = controls.getObject().position;
+     if (!controls.isLocked) return; // Movement logic only when locked
+
+     const playerPosition = controls.getObject().position; // Camera position is head position
+     const playerVelocity = movement.velocity;
      const onGroundPrev = movement.onGround;
      movement.onGround = false;
      const meshesToIntersect = Object.values(chunkMeshCache);
 
      // --- Ground Check ---
-     downRaycaster.ray.origin.copy(playerPosition);
-      downRaycaster.ray.origin.y += 0.1; // Start ray slightly above player center base
-      downRaycaster.far = playerHeight / 2 + 0.2; // Check distance below center
+     const downRay = collisionRays[0];
+     downRay.ray.origin.copy(playerPosition);
+     // Start ray slightly below head height to avoid hitting ceiling first
+     // And ensure it checks from near the center of the player model downwards
+     downRay.ray.origin.y -= (playerHeight / 2) - 0.1; // Start check near feet level
+     downRay.far = 0.2; // Check just below feet
 
-      if (meshesToIntersect.length > 0) {
-         const groundIntersects = downRaycaster.intersectObjects(meshesToIntersect, false);
+     if (meshesToIntersect.length > 0) {
+         const groundIntersects = downRay.intersectObjects(meshesToIntersect, false);
          if (groundIntersects.length > 0) {
-             const distanceToGround = groundIntersects[0].distance;
-             const groundThreshold = playerHeight / 2 + 0.1; // How close feet need to be
-
-             if (distanceToGround <= groundThreshold) {
-                 movement.onGround = true;
-                 // Snap to ground if falling onto it
-                 if (movement.velocity.y < 0) {
-                     // Adjust position to be exactly on ground + small offset
-                     playerPosition.y -= (distanceToGround - playerHeight / 2 - 0.01);
-                     movement.velocity.y = 0; // Stop falling velocity
-                 }
-             }
+             // console.log('Ground intersect distance:', groundIntersects[0].distance);
+             movement.onGround = true;
+             // Snap player up slightly if slightly below ground (e.g., due to float precision)
+             // if (groundIntersects[0].distance < 0.1) { // This threshold might need tuning
+             //    playerPosition.y += (0.1 - groundIntersects[0].distance);
+             //}
          }
      }
 
-
-     // Apply gravity if not on ground
-     if (!movement.onGround) {
-         movement.velocity.y += gravity * delta;
+     // Apply gravity if not on ground OR if moving upwards (allows jumping off ground)
+     if (!movement.onGround || playerVelocity.y > 0) {
+         playerVelocity.y += gravity * delta;
      } else {
-         // Reset downward velocity if grounded and not jumping
-         movement.velocity.y = Math.max(0, movement.velocity.y);
+         // On ground and not moving up: stop vertical velocity
+         playerVelocity.y = 0;
      }
-
 
      // --- Jumping ---
-     if (movement.jump) {
-         if (movement.onGround) {
-             // Calculate jump velocity needed to reach jumpHeight
-             movement.velocity.y = Math.sqrt(2 * jumpHeight * Math.abs(gravity));
-             movement.onGround = false; // No longer on ground after jumping
-         }
-         movement.jump = false; // Consume jump impulse
+     if (movement.jump && onGroundPrev) { // Can only jump if was on ground previously
+         playerVelocity.y = Math.sqrt(2 * jumpHeight * Math.abs(gravity)); // Calculate jump velocity
+         movement.onGround = false; // Ensure not flagged as on ground immediately after jump
      }
+     movement.jump = false; // Consume jump input
 
+     // --- Horizontal Movement & Damping ---
+     // Apply damping (friction)
+     const dampingFactor = Math.pow(0.001, delta); // Exponential damping based on delta
+     playerVelocity.x *= dampingFactor;
+     playerVelocity.z *= dampingFactor;
 
-     // --- Horizontal Movement --- (Simplified - no wall collision yet)
-     movement.velocity.x -= movement.velocity.x * 10.0 * delta; // Damping
-     movement.velocity.z -= movement.velocity.z * 10.0 * delta; // Damping
-
-
+     // Calculate movement direction based on input and camera orientation
      movement.direction.z = Number(movement.forward) - Number(movement.backward);
-     movement.direction.x = Number(movement.left) - Number(movement.right);
-     movement.direction.normalize(); // Ensure consistent speed
+     movement.direction.x = Number(movement.right) - Number(movement.left); // Note: Right is positive X
+     movement.direction.normalize(); // Ensure consistent speed regardless of diagonal movement
+
+     const currentSpeed = playerSpeed * (movement.onGround ? 1 : 0.5); // Less air control
+
+     // Get camera direction (ignore vertical component)
+     const cameraDirection = new THREE.Vector3();
+     camera.getWorldDirection(cameraDirection);
+     cameraDirection.y = 0;
+     cameraDirection.normalize();
+
+     const rightDirection = new THREE.Vector3().crossVectors(camera.up, cameraDirection).normalize();
+
+     // Calculate velocity change based on input direction relative to camera
+     const moveVelocity = new THREE.Vector3();
+     moveVelocity.add(cameraDirection.multiplyScalar(movement.direction.z));
+     moveVelocity.add(rightDirection.multiplyScalar(movement.direction.x));
+     moveVelocity.normalize().multiplyScalar(currentSpeed); // Ensure consistent speed
+
+     // Apply acceleration
+     playerVelocity.x += moveVelocity.x * delta * 10; // Adjust multiplier as needed for responsiveness
+     playerVelocity.z += moveVelocity.z * delta * 10;
 
 
-     const currentSpeed = playerSpeed * (movement.onGround ? 1 : 0.7); // Slightly less air control
+     // --- Wall Collision (Simplified Placeholder) ---
+     // TODO: Implement proper collision detection and response with walls
+
+     // --- Apply Movement ---
+     // Use controls.moveRight and moveForward which handle camera rotation
+     // Need to calculate the *intended movement vector* based on velocity
+     const deltaX = playerVelocity.x * delta;
+     const deltaZ = playerVelocity.z * delta;
+
+     // controls.moveRight uses camera's local X, controls.moveForward uses camera's local Z (view direction)
+     // We need to translate world-space velocity change into camera-local movement commands.
+     // This is tricky. Let's directly manipulate position for now, assuming controls object is added.
+     const forwardVector = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
+     const rightVector = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion);
+
+     playerPosition.add(forwardVector.multiplyScalar(deltaZ)); // Incorrect: Should use velocity relative to world/input
+     playerPosition.add(rightVector.multiplyScalar(deltaX)); // Incorrect
 
 
-     if (movement.forward || movement.backward) movement.velocity.z -= movement.direction.z * currentSpeed * delta * 100; // Apply speed more directly
-     if (movement.left || movement.right) movement.velocity.x -= movement.direction.x * currentSpeed * delta * 100;
+     // --- Correct position update using velocity ---
+      playerPosition.x += playerVelocity.x * delta;
+      playerPosition.z += playerVelocity.z * delta;
+      playerPosition.y += playerVelocity.y * delta; // Apply vertical movement
 
 
-     // Move player based on camera direction
-     controls.moveRight(-movement.velocity.x * delta);
-     controls.moveForward(-movement.velocity.z * delta);
-
-
-     // Apply vertical movement (gravity/jump)
-     playerPosition.y += movement.velocity.y * delta;
-
-
-     // Basic world bounds check (prevent falling infinitely)
-     if (playerPosition.y < -20) {
-         playerPosition.y = 100; // Respawn high up
-         playerPosition.x = 0;
-         playerPosition.z = 0;
-         movement.velocity.y = 0;
-         movement.velocity.x = 0;
-         movement.velocity.z = 0;
-         // Force chunk reload around spawn
-         chunks = {}; // Clear local chunk cache
-         Object.values(chunkMeshCache).forEach(mesh => scene.remove(mesh)); // Remove all meshes
-         chunkMeshCache = {};
-         chunkGeometryCache = {};
-         chunkLoadQueue = [];
-         isLoadingChunk = false;
-         updateVisibleChunks();
+     // --- World Bounds Check ---
+     if (playerPosition.y < -50) { // Increased fall distance before respawn
+         console.log("Player fell out of world, respawning...");
+         playerPosition.set(5, 70, 5); // Respawn high up near start
+         playerVelocity.set(0, 0, 0);
+         movement.onGround = false;
+         // Don't clear all chunks on respawn, just recenter view
+         lastPlayerChunkX = null; // Force chunk check on next frame
+         lastPlayerChunkZ = null;
+         updateVisibleChunks(); // Trigger chunk loading around new position
      }
 
-
-     // Send presence update
-     if (controls.isLocked && Date.now() - lastPresenceUpdate > 50) { // Limit update rate and only when locked
-        const basePosition = { x: playerPosition.x, y: playerPosition.y - playerHeight/2 , z: playerPosition.z }; // Send base position
+     // --- Send Presence Update ---
+     // Throttle updates
+     if (Date.now() - lastPresenceUpdate > 100) { // Send updates ~10 times/sec
+        // Send position of the player's feet for rendering consistency
+        const feetPosition = { x: playerPosition.x, y: playerPosition.y - playerHeight / 2, z: playerPosition.z };
+        // Send camera rotation (use quaternion for better accuracy if needed)
         const currentRotation = { x: camera.rotation.x, y: camera.rotation.y, z: camera.rotation.z };
-        // Basic check to avoid sending redundant updates if nothing changed
-        if (JSON.stringify(basePosition) !== JSON.stringify(lastSentPosition) || JSON.stringify(currentRotation) !== JSON.stringify(lastSentRotation)) {
+
+        // Only send if position or rotation actually changed significantly
+        const posChanged = !lastSentPosition || Math.abs(feetPosition.x - lastSentPosition.x) > 0.01 || Math.abs(feetPosition.y - lastSentPosition.y) > 0.01 || Math.abs(feetPosition.z - lastSentPosition.z) > 0.01;
+        const rotChanged = !lastSentRotation || Math.abs(currentRotation.x - lastSentRotation.x) > 0.01 || Math.abs(currentRotation.y - lastSentRotation.y) > 0.01; // Only check yaw for now maybe
+
+        if (posChanged || rotChanged) {
              room.updatePresence({
-                position: basePosition,
+                position: feetPosition,
                 rotation: currentRotation
             });
             lastPresenceUpdate = Date.now();
-            lastSentPosition = basePosition;
+            lastSentPosition = feetPosition;
             lastSentRotation = currentRotation;
         }
     }
@@ -905,22 +945,36 @@ const clock = new THREE.Clock();
 
 // Initial setup
 setupBlockSelector();
-updateVisibleChunks(); // Initial chunk load request
+// Perform initial chunk check immediately
+console.log("Performing initial chunk load...");
+updateVisibleChunks(); // Request initial chunks based on starting position
+
 
 // Animation loop
 function animate() {
     requestAnimationFrame(animate);
-    const delta = Math.min(clock.getDelta(), 0.1); // Cap delta to prevent physics jumps
+    const delta = Math.min(clock.getDelta(), 0.1); // Cap delta
 
-
-     // Only update physics and chunks if controls are locked
-     if (controls.isLocked) {
-        checkCollisions(delta); // Update player physics and movement
-        updateVisibleChunks(); // Load/unload chunks based on player position
+    // Update player physics and movement ONLY when pointer is locked
+    if (controls.isLocked) {
+        checkCollisions(delta);
     }
 
+     // Update visible chunks based on camera position regardless of lock state
+     // Throttle this check slightly to avoid running every single frame
+     // updateVisibleChunks(); // Removed throttling for now, run every frame
 
-    // Always render
+     // Run the chunk visibility check less frequently?
+     // Maybe only when the player moves significantly or periodically?
+     // For now, running it based on chunk change (inside updateVisibleChunks) is probably best.
+     // We need a way to trigger updateVisibleChunks periodically or when needed.
+     // Let's rely on the check inside it for now.
+     // We still need to *call* it though.
+     updateVisibleChunks(); // Needs to be called to check if player moved chunks
+
+    // Update other players (TODO)
+
+    // Render the scene
     renderer.render(scene, camera);
 }
 
