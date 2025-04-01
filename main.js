@@ -11,7 +11,7 @@ const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x87ceeb); // Sky blue
 
 const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
-camera.position.set(0, 80, 0); // Start higher up
+camera.position.set(0, 65, 0); // Start a bit lower, closer to potential ground
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
@@ -20,6 +20,7 @@ document.body.appendChild(renderer.domElement);
 
 const loadingDiv = document.getElementById('loading');
 const blockSelectorDiv = document.getElementById('block-selector');
+const blockSelectorUITexturePreview = document.getElementById('block-selector-texture');
 
 // Lighting
 const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
@@ -71,7 +72,6 @@ const playerSpeed = 10.0;
 const jumpHeight = 1.0;
 const gravity = -30.0;
 
-
 document.addEventListener('keydown', (event) => {
     switch (event.code) {
         case 'ArrowUp':
@@ -107,24 +107,19 @@ const tileTextureHeight = 64;
 
 // Block types and textures
 const blockTypes = {
-    grass: { top: 0, bottom: 2, side: 1 },
-    dirt: { top: 2, bottom: 2, side: 2 },
-    stone: { top: 3, bottom: 3, side: 3 },
-    wood: { top: 4, bottom: 4, side: 5 },
-    leaves: { top: 6, bottom: 6, side: 6 },
-    sand: { top: 7, bottom: 7, side: 7},
+    grass: { top: 0, bottom: 2, side: 1, color: 0x559944 }, // Added color fallback
+    dirt: { top: 2, bottom: 2, side: 2, color: 0x885522 },
+    stone: { top: 3, bottom: 3, side: 3, color: 0x888888 },
+    wood: { top: 4, bottom: 4, side: 5, color: 0x775533 },
+    leaves: { top: 6, bottom: 6, side: 6, color: 0x44aa44 },
+    sand: { top: 7, bottom: 7, side: 7, color: 0xeeeecc },
     // Add more block types here
 };
 const blockNames = Object.keys(blockTypes);
 let selectedBlock = blockNames[0]; // Default selection
 
-// Texture loading
-const textureLoader = new THREE.TextureLoader();
-const texture = textureLoader.load('textures.png');
-texture.magFilter = THREE.NearestFilter;
-texture.minFilter = THREE.NearestFilter;
-
-const material = new THREE.MeshLambertMaterial({ map: texture, side: THREE.DoubleSide });
+// Use MeshStandardMaterial without a map for now, allows for lighting
+const material = new THREE.MeshStandardMaterial({ vertexColors: true, side: THREE.DoubleSide }); // Use vertex colors
 
 // Noise generator
 const simplex = new SimplexNoise();
@@ -136,7 +131,6 @@ const chunkMeshCache = {};
 const CHUNK_COLLECTION = 'chunk_v1';
 let chunkLoadQueue = [];
 let isLoadingChunk = false;
-
 
 function getChunkId(x, z) {
     return `${Math.floor(x / chunkSize)},${Math.floor(z / chunkSize)}`;
@@ -174,6 +168,20 @@ function generateChunkData(chunkX, chunkZ) {
             const worldX = startX + x;
             const worldZ = startZ + z;
 
+            // Simple flat grass plane for testing visibility quickly
+            const height = 50; // Flat plane at y=50
+            const key = `${x},${height},${z}`;
+            blocks[key] = { type: 'grass' };
+            // Stone below
+            for (let y=0; y < height; y++) {
+                 const stoneKey = `${x},${y},${z}`;
+                 blocks[stoneKey] = {type: 'stone'};
+            }
+             // Bedrock at y=0
+             const bedrockKey = `${x},0,${z}`;
+             blocks[bedrockKey] = { type: 'stone', unbreakable: true };
+
+            /* // Original noise generation - uncomment later if needed
             const noiseVal = (simplex.noise2D(worldX * 0.01, worldZ * 0.01) + 1) / 2; // Normalize to 0-1
             const height = Math.floor(noiseVal * 30) + 30; // Base terrain height 30-60
 
@@ -193,22 +201,26 @@ function generateChunkData(chunkX, chunkZ) {
              // Bedrock at y=0
              const bedrockKey = `${x},0,${z}`;
              blocks[bedrockKey] = { type: 'stone', unbreakable: true }; // Using stone texture for now
+            */
         }
     }
     return blocks;
 }
 
-
 function getBlock(worldX, worldY, worldZ) {
     const { chunkX, chunkZ } = getChunkCoordinates(worldX, worldZ);
     const chunkId = `${chunkX},${chunkZ}`;
     const chunk = chunks[chunkId];
-    if (!chunk || !chunk.blocks) return null;
+    // If chunk or its blocks don't exist, return null (air)
+    if (!chunk || !chunk.blocks) {
+        // Check if coordinates are within world generation bounds (e.g., y > 0)
+        if (worldY < 0) return { type: 'stone', unbreakable: true }; // Treat below 0 as bedrock conceptually
+        return null;
+    }
 
     const blockKey = getBlockKeyInChunk(worldX, worldY, worldZ);
-    return chunk.blocks[blockKey];
+    return chunk.blocks[blockKey] || null; // Return block or null if key doesn't exist
 }
-
 
 // Create chunk geometry
 function createChunkGeometry(chunkX, chunkZ, chunkData) {
@@ -217,12 +229,14 @@ function createChunkGeometry(chunkX, chunkZ, chunkData) {
     const geometry = new THREE.BufferGeometry();
     const positions = [];
     const normals = [];
-    const uvs = [];
+    // const uvs = []; // Not needed without texture map
+    const colors = []; // Added for vertex colors
     const indices = [];
     let index = 0;
 
     const startX = chunkX * chunkSize;
     const startZ = chunkZ * chunkSize;
+    const tempColor = new THREE.Color(); // For color conversion
 
     for (const key in chunkBlocks) {
         const [lx, ly, lz] = key.split(',').map(Number);
@@ -234,13 +248,14 @@ function createChunkGeometry(chunkX, chunkZ, chunkData) {
              console.warn(`Unknown block type: ${block.type} at ${key}`);
              continue;
         }
+        const blockColor = new THREE.Color(blockInfo.color || 0xffffff); // Use defined color or white
 
 
         const worldX = startX + lx;
         const worldY = ly;
         const worldZ = startZ + lz;
 
-        // Check neighbors
+        // Check neighbors - IMPORTANT: Must check across chunk boundaries
         const neighbors = {
             nx: getBlock(worldX - 1, worldY, worldZ),
             px: getBlock(worldX + 1, worldY, worldZ),
@@ -250,120 +265,148 @@ function createChunkGeometry(chunkX, chunkZ, chunkData) {
             pz: getBlock(worldX, worldY, worldZ + 1),
         };
 
-        const faces = [
-            { dir: [-1, 0, 0], corners: [ [0, 1, 0], [0, 0, 0], [0, 1, 1], [0, 0, 1] ], uvRow: blockInfo.side, neighbor: neighbors.nx }, // nx
-            { dir: [ 1, 0, 0], corners: [ [1, 1, 1], [1, 0, 1], [1, 1, 0], [1, 0, 0] ], uvRow: blockInfo.side, neighbor: neighbors.px }, // px
-            { dir: [ 0,-1, 0], corners: [ [1, 0, 1], [0, 0, 1], [1, 0, 0], [0, 0, 0] ], uvRow: blockInfo.bottom, neighbor: neighbors.ny }, // ny
-            { dir: [ 0, 1, 0], corners: [ [0, 1, 1], [1, 1, 1], [0, 1, 0], [1, 1, 0] ], uvRow: blockInfo.top, neighbor: neighbors.py }, // py
-            { dir: [ 0, 0,-1], corners: [ [1, 1, 0], [0, 1, 0], [1, 0, 0], [0, 0, 0] ], uvRow: blockInfo.side, neighbor: neighbors.nz }, // nz
-            { dir: [ 0, 0, 1], corners: [ [0, 1, 1], [0, 0, 1], [1, 1, 1], [1, 0, 1] ], uvRow: blockInfo.side, neighbor: neighbors.pz }, // pz
+        // Simpler face definitions since UVs are not needed
+         const faces = [
+            { dir: [-1, 0, 0], corners: [ [0, 1, 0], [0, 0, 0], [0, 1, 1], [0, 0, 1] ], neighbor: neighbors.nx }, // nx
+            { dir: [ 1, 0, 0], corners: [ [1, 1, 1], [1, 0, 1], [1, 1, 0], [1, 0, 0] ], neighbor: neighbors.px }, // px
+            { dir: [ 0,-1, 0], corners: [ [1, 0, 1], [0, 0, 1], [1, 0, 0], [0, 0, 0] ], neighbor: neighbors.ny }, // ny - Bottom
+            { dir: [ 0, 1, 0], corners: [ [0, 1, 1], [1, 1, 1], [0, 1, 0], [1, 1, 0] ], neighbor: neighbors.py }, // py - Top
+            { dir: [ 0, 0,-1], corners: [ [1, 1, 0], [0, 1, 0], [1, 0, 0], [0, 0, 0] ], neighbor: neighbors.nz }, // nz
+            { dir: [ 0, 0, 1], corners: [ [0, 1, 1], [0, 0, 1], [1, 1, 1], [1, 0, 1] ], neighbor: neighbors.pz }, // pz
         ];
 
-        for (const { dir, corners, uvRow, neighbor } of faces) {
-             // Only render face if neighbor is air or transparent block (implement transparency check later)
+        for (const { dir, corners, neighbor } of faces) {
+             // Only render face if neighbor is air (null)
             if (!neighbor) {
                 const ndx = positions.length / 3;
                 for (const pos of corners) {
                     positions.push(pos[0] + worldX, pos[1] + worldY, pos[2] + worldZ);
                     normals.push(...dir);
+                    // Apply vertex color - slightly darken based on normal for subtle shading
+                    tempColor.copy(blockColor);
+                    if (dir[1] === 1) tempColor.multiplyScalar(1.0); // Top face brightest
+                    else if (dir[1] === -1) tempColor.multiplyScalar(0.7); // Bottom face darkest
+                    else tempColor.multiplyScalar(0.85); // Side faces
+                    colors.push(tempColor.r, tempColor.g, tempColor.b);
                 }
 
-                const u = (uvRow % 4) * (tileTextureWidth / 4);
-                const v = Math.floor(uvRow / 4) * (tileTextureHeight / 1); // Assuming 1 row of textures for now
-
-                const u0 = u / tileTextureWidth;
-                const v0 = v / tileTextureHeight;
-                const u1 = (u + tileTextureWidth / 4) / tileTextureWidth;
-                const v1 = (v + tileTextureHeight / 1) / tileTextureHeight;
-
-                uvs.push(u0, v1, u0, v0, u1, v1, u1, v0); // Adjusted UV mapping
+                // uvs.push(0, 0, 1, 0, 0, 1, 1, 1); // Dummy UVs if needed, but vertexColors is used
 
                 indices.push(
                     ndx, ndx + 1, ndx + 2,
                     ndx + 2, ndx + 1, ndx + 3,
                 );
-                 index += 6;
+                 index += 6; // 2 triangles per face
             }
         }
     }
 
+    if (positions.length === 0) {
+         // console.log(`Chunk ${chunkId} generated no geometry.`);
+         return null; // Return null if no geometry to avoid errors
+     }
+
     geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
     geometry.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
-    geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+    // geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2)); // No UVs needed now
+    geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3)); // Add color attribute
     geometry.setIndex(indices);
     geometry.computeBoundingSphere(); // Important for frustum culling
 
     chunkGeometryCache[chunkId] = geometry;
+    // console.log(`Generated geometry for chunk ${chunkId} with ${positions.length / 3} vertices.`);
     return geometry;
 }
-
 
 // Function to load or generate a chunk
 async function loadOrGenerateChunk(chunkX, chunkZ) {
     const chunkId = `${chunkX},${chunkZ}`;
-    if (chunks[chunkId] || chunkLoadQueue.includes(chunkId)) {
-        return; // Already loaded, loading, or queued
-    }
-
-    chunkLoadQueue.push(chunkId);
-    processChunkQueue(); // Start processing if not already
-}
-
-
-async function processChunkQueue() {
-    if (isLoadingChunk || chunkLoadQueue.length === 0) {
+    // Prevent queuing if already loaded, being processed by this client, or actively being loaded
+     if (chunks[chunkId] || chunkLoadQueue.includes(chunkId) || isLoadingChunk && chunkLoadQueue[0] === chunkId) {
         return;
     }
-    isLoadingChunk = true;
 
-    const chunkId = chunkLoadQueue.shift();
+    // console.log(`Queueing chunk load: ${chunkId}`);
+    chunkLoadQueue.push(chunkId);
+    if (!isLoadingChunk) { // Start processing immediately if queue was empty
+        processChunkQueue();
+    }
+}
+
+async function processChunkQueue() {
+    if (chunkLoadQueue.length === 0) {
+         isLoadingChunk = false;
+         // console.log("Chunk queue empty.");
+         updateLoadingStatus();
+        return;
+    }
+
+    isLoadingChunk = true;
+    const chunkId = chunkLoadQueue[0]; // Peek at the front
     const [chunkX, chunkZ] = chunkId.split(',').map(Number);
+    // console.log(`Processing chunk: ${chunkId}`);
+    updateLoadingStatus();
+
 
     // Try to get from DB
-    let chunkData = await room.collection(CHUNK_COLLECTION).get(chunkId);
+    let chunkData = null;
+    try {
+         chunkData = await room.collection(CHUNK_COLLECTION).get(chunkId);
+    } catch(e) {
+        console.warn(`Error fetching chunk ${chunkId} from DB (might not exist yet):`, e);
+        // Proceed to generation if fetch failed (e.g., network error or not found)
+    }
 
-    if (!chunkData) {
-        // Generate and save to DB
+
+    if (!chunkData || !chunkData.blocks) { // If not in DB or has no blocks field
+        // console.log(`Chunk ${chunkId} not found or invalid in DB, generating...`);
         const generatedBlocks = generateChunkData(chunkX, chunkZ);
         try {
-            chunkData = await room.collection(CHUNK_COLLECTION).create({
-                id: chunkId, // Use chunkId as the DB id
+            // Use create which handles potential race conditions better if id is provided
+             chunkData = await room.collection(CHUNK_COLLECTION).create({
+                id: chunkId,
                 chunkX: chunkX,
                 chunkZ: chunkZ,
                 blocks: generatedBlocks,
             });
             console.log(`Generated and saved chunk: ${chunkId}`);
         } catch (e) {
-            // Handle potential race condition if another client created it first
-             if (e.message.includes('already exists')) {
-                 console.log(`Chunk ${chunkId} already exists, fetching.`);
-                 chunkData = await room.collection(CHUNK_COLLECTION).get(chunkId);
+            if (e && e.message && e.message.includes('already exists')) {
+                 console.log(`Chunk ${chunkId} already exists (race condition?), fetching again.`);
+                 try {
+                    chunkData = await room.collection(CHUNK_COLLECTION).get(chunkId);
+                 } catch (fetchError) {
+                     console.error(`Error fetching chunk ${chunkId} after creation conflict:`, fetchError);
+                     chunkData = null; // Ensure it's null if fetch fails
+                 }
              } else {
-                 console.error("Error creating chunk:", e);
-                 isLoadingChunk = false;
-                 processChunkQueue(); // Try next chunk
-                 return;
+                 console.error(`Error creating chunk ${chunkId}:`, e);
+                 chunkData = null; // Ensure it's null if creation fails
              }
         }
 
     } else {
-        console.log(`Loaded chunk from DB: ${chunkId}`);
+        // console.log(`Loaded chunk from DB: ${chunkId}`);
     }
 
+
+    // Remove the processed chunk ID from the front of the queue *after* processing attempt
+    chunkLoadQueue.shift();
 
     if (chunkData && chunkData.blocks) {
         chunks[chunkId] = chunkData;
+        // console.log(`Updating mesh for chunk ${chunkId}`);
         updateChunkMesh(chunkX, chunkZ, chunkData);
     } else {
-        console.error(`Failed to load or generate chunk data for ${chunkId}`);
+        console.error(`Failed to load or generate valid chunk data for ${chunkId}.`);
     }
 
-
     isLoadingChunk = false;
-    // Process next chunk in the queue after a short delay to prevent flooding
-    setTimeout(processChunkQueue, 10);
+    // Process next chunk in the queue without delay for faster loading
+    // Use requestAnimationFrame to yield to the browser briefly
+    requestAnimationFrame(processChunkQueue);
+     // setTimeout(processChunkQueue, 0); // Or setTimeout 0
 }
-
 
 function updateChunkMesh(chunkX, chunkZ, chunkData) {
     const chunkId = `${chunkX},${chunkZ}`;
@@ -373,68 +416,93 @@ function updateChunkMesh(chunkX, chunkZ, chunkData) {
         scene.remove(chunkMeshCache[chunkId]);
         chunkMeshCache[chunkId].geometry.dispose(); // Dispose old geometry
         delete chunkMeshCache[chunkId];
-        delete chunkGeometryCache[chunkId]; // Clear geometry cache as well
+        // Don't delete geometry cache immediately, createChunkGeometry will overwrite
     }
 
 
     const geometry = createChunkGeometry(chunkX, chunkZ, chunkData);
-    if (geometry.attributes.position.count > 0) {
+    // Ensure geometry is valid and has vertices before creating a mesh
+    if (geometry && geometry.attributes.position && geometry.attributes.position.count > 0) {
         const mesh = new THREE.Mesh(geometry, material);
         mesh.castShadow = true;
         mesh.receiveShadow = true;
         mesh.userData = { chunkId }; // Store chunkId for potential future use
         scene.add(mesh);
         chunkMeshCache[chunkId] = mesh;
+        // console.log(`Added mesh for chunk ${chunkId} to scene.`);
     } else {
-         console.log(`Chunk ${chunkId} has no geometry, skipping mesh creation.`);
+         // console.log(`Chunk ${chunkId} resulted in no geometry or empty geometry, skipping mesh creation.`);
+          // Ensure no old mesh lingers if new geometry is null/empty
+         if (chunkMeshCache[chunkId]) {
+             scene.remove(chunkMeshCache[chunkId]);
+             delete chunkMeshCache[chunkId];
+         }
     }
 }
 
-
 // Render distance
-const renderDistance = 5; // Chunks in each direction
+const renderDistance = 4; // Chunks in each direction (reduced for faster initial load)
 
 function updateVisibleChunks() {
-    const playerChunkX = Math.floor(controls.getObject().position.x / chunkSize);
-    const playerChunkZ = Math.floor(controls.getObject().position.z / chunkSize);
+    const playerPos = controls.getObject().position;
+     // Handle potential NaN positions early on
+    if (isNaN(playerPos.x) || isNaN(playerPos.z)) {
+        console.warn("Player position is NaN, skipping chunk update.");
+        return;
+    }
+
+    const playerChunkX = Math.floor(playerPos.x / chunkSize);
+    const playerChunkZ = Math.floor(playerPos.z / chunkSize);
 
     const previouslyVisible = new Set(Object.keys(chunkMeshCache));
-    const currentlyVisible = new Set();
+    const currentlyNeeded = new Set(); // Renamed from currentlyVisible
 
+    // Determine needed chunks
     for (let x = playerChunkX - renderDistance; x <= playerChunkX + renderDistance; x++) {
         for (let z = playerChunkZ - renderDistance; z <= playerChunkZ + renderDistance; z++) {
             const chunkId = `${x},${z}`;
-             currentlyVisible.add(chunkId);
-            if (!chunkMeshCache[chunkId] && !chunkLoadQueue.includes(chunkId) && !chunks[chunkId]) {
-                loadOrGenerateChunk(x, z);
+             currentlyNeeded.add(chunkId);
+            // If chunk data not loaded AND not already queued AND not currently being processed
+            if (!chunks[chunkId] && !chunkLoadQueue.includes(chunkId) && !(isLoadingChunk && chunkLoadQueue[0] === chunkId)) {
+                loadOrGenerateChunk(x, z); // Queue it for loading/generation
+            } else if (chunks[chunkId] && !chunkMeshCache[chunkId]) {
+                 // Data is loaded, but mesh isn't visible, maybe it was unloaded? Recreate mesh.
+                 // console.log(`Recreating mesh for already loaded chunk: ${chunkId}`);
+                 updateChunkMesh(x, z, chunks[chunkId]);
             }
         }
     }
 
-     // Remove chunks that are no longer visible
+     // Unload meshes for chunks that are no longer needed
     previouslyVisible.forEach(chunkId => {
-        if (!currentlyVisible.has(chunkId)) {
+        if (!currentlyNeeded.has(chunkId)) {
             if (chunkMeshCache[chunkId]) {
+                // console.log(`Unloading mesh for chunk: ${chunkId}`);
                 scene.remove(chunkMeshCache[chunkId]);
-                 // Don't dispose geometry immediately, might be needed again soon
+                 // Consider disposing geometry here if memory becomes an issue,
+                 // but keeping it cached might speed up re-entering the area.
                  // chunkMeshCache[chunkId].geometry.dispose();
+                 // delete chunkGeometryCache[chunkId];
                 delete chunkMeshCache[chunkId];
-                 // Don't delete from main `chunks` data, just unload mesh
+                 // Keep the chunk data in `chunks` cache
             }
         }
     });
 
+    updateLoadingStatus(); // Update UI based on queue length
+}
+
+function updateLoadingStatus() {
      if (loadingDiv) {
-        if (chunkLoadQueue.length > 0 || isLoadingChunk) {
+        const queueSize = chunkLoadQueue.length + (isLoadingChunk ? 1 : 0);
+        if (queueSize > 0) {
             loadingDiv.style.display = 'block';
-            loadingDiv.textContent = `Loading Chunks... (${chunkLoadQueue.length} remaining)`;
+            loadingDiv.textContent = `Loading Chunks... (${queueSize} remaining)`;
         } else {
             loadingDiv.style.display = 'none';
         }
     }
-
 }
-
 
 // Block placement and removal logic
 const raycaster = new THREE.Raycaster();
@@ -445,37 +513,53 @@ window.addEventListener('mousedown', (event) => {
 
 
     raycaster.setFromCamera({ x: 0, y: 0 }, camera); // Raycast from center of screen
-    const intersects = raycaster.intersectObjects(Object.values(chunkMeshCache), false);
+    // Ensure chunk meshes are intersected
+    const meshesToIntersect = Object.values(chunkMeshCache);
+    if (meshesToIntersect.length === 0) return; // Don't raycast if no meshes exist
+
+    const intersects = raycaster.intersectObjects(meshesToIntersect, false);
 
 
     if (intersects.length > 0) {
         const intersection = intersects[0];
+         // Check distance to prevent modifying blocks too far away
+         if (intersection.distance > 6) {
+             console.log("Too far to modify block.");
+             return;
+         }
+
         const point = intersection.point;
-        const normal = intersection.face.normal;
+        const normal = intersection.face.normal.clone().normalize(); // Ensure it's normalized
 
 
         // Calculate voxel coordinates based on click type
         let voxelPos;
         if (event.button === 0) { // Left click: Remove block
             voxelPos = getVoxelCoordinates(
-                point.x - normal.x * 0.01,
+                point.x - normal.x * 0.01, // Move slightly inside the clicked face
                 point.y - normal.y * 0.01,
                 point.z - normal.z * 0.01
             );
+             // console.log("Removing block at:", voxelPos);
              modifyBlock(voxelPos.x, voxelPos.y, voxelPos.z, null); // Remove block
         } else if (event.button === 2) { // Right click: Place block
              voxelPos = getVoxelCoordinates(
-                point.x + normal.x * 0.01,
+                point.x + normal.x * 0.01, // Move slightly outside the clicked face
                 point.y + normal.y * 0.01,
                 point.z + normal.z * 0.01
             );
+             // console.log("Placing block at:", voxelPos, "Type:", selectedBlock);
+
              // Basic collision check: Don't place block inside player
             const playerPos = controls.getObject().position;
-            const playerVoxel = getVoxelCoordinates(playerPos.x, playerPos.y, playerPos.z);
-             const playerVoxelHead = getVoxelCoordinates(playerPos.x, playerPos.y + playerHeight - 0.1, playerPos.z); // Check head pos
+             // Check both the feet and head positions of the player capsule
+             const playerFeetY = playerPos.y - playerHeight / 2;
+             const playerHeadY = playerPos.y + playerHeight / 2;
+             const playerVoxelFoot = getVoxelCoordinates(playerPos.x, playerFeetY + 0.1, playerPos.z); // Check slightly above feet
+             const playerVoxelHead = getVoxelCoordinates(playerPos.x, playerHeadY - 0.1, playerPos.z); // Check slightly below head
 
 
-            if ( (voxelPos.x === playerVoxel.x && voxelPos.y === playerVoxel.y && voxelPos.z === playerVoxel.z) ||
+            if ( (voxelPos.x === playerVoxelFoot.x && voxelPos.y === playerVoxelFoot.y && voxelPos.z === playerVoxelFoot.z) ||
                  (voxelPos.x === playerVoxelHead.x && voxelPos.y === playerVoxelHead.y && voxelPos.z === playerVoxelHead.z) )
                  {
                  console.log("Cannot place block inside player");
@@ -488,9 +572,8 @@ window.addEventListener('mousedown', (event) => {
     }
 });
 
-
 async function modifyBlock(worldX, worldY, worldZ, newBlock) {
-     if (worldY <= 0) return; // Cannot modify below y=0 (bedrock level)
+     if (worldY < 0) return; // Cannot modify below y=0
 
 
     const { chunkX, chunkZ } = getChunkCoordinates(worldX, worldZ);
@@ -498,46 +581,79 @@ async function modifyBlock(worldX, worldY, worldZ, newBlock) {
     const blockKey = getBlockKeyInChunk(worldX, worldY, worldZ);
 
 
-    const chunkData = chunks[chunkId];
+    let chunkData = chunks[chunkId];
+    // If chunk data isn't loaded locally yet, try to fetch it before modifying
     if (!chunkData) {
-        console.error(`Attempted to modify non-loaded chunk: ${chunkId}`);
-        return;
+        console.log(`Chunk ${chunkId} not loaded locally, attempting fetch before modification.`);
+        try {
+            chunkData = await room.collection(CHUNK_COLLECTION).get(chunkId);
+            if (chunkData) {
+                chunks[chunkId] = chunkData; // Store fetched data
+            } else {
+                 console.error(`Attempted to modify non-existent chunk: ${chunkId}`);
+                return; // Chunk doesn't exist in DB either
+            }
+        } catch (e) {
+            console.error(`Error fetching chunk ${chunkId} for modification:`, e);
+            return; // Failed to fetch
+        }
     }
+
+     // Ensure blocks object exists
+     if (!chunkData.blocks) {
+        chunkData.blocks = {};
+     }
+
 
      // Check if block is unbreakable
     const existingBlock = chunkData.blocks[blockKey];
-    if (existingBlock && existingBlock.unbreakable && newBlock === null) {
-        console.log("Cannot break unbreakable block");
+     // Can't break bedrock (y=0) or explicitly unbreakable blocks
+    if ((worldY === 0 || (existingBlock && existingBlock.unbreakable)) && newBlock === null) {
+        console.log("Cannot break unbreakable block or bedrock");
         return;
     }
 
 
     // Optimistic update
-    const oldBlocks = { ...chunkData.blocks }; // Clone for potential revert
+    const oldBlocks = { ...chunkData.blocks }; // Deep clone might be needed if block data becomes complex
+    const previousBlock = chunkData.blocks[blockKey]; // Store the specific block being changed
+
     if (newBlock) {
+        // Avoid placing the exact same block again
+        if (existingBlock && existingBlock.type === newBlock.type) {
+            // console.log("Block already exists.");
+            return;
+        }
         chunkData.blocks[blockKey] = newBlock;
     } else {
+         // Avoid deleting if already air
+        if (!existingBlock) {
+             // console.log("Block already air.");
+             return;
+         }
         delete chunkData.blocks[blockKey];
     }
+
+    console.log(`Optimistic update: ${newBlock ? 'Placing' : 'Removing'} block at ${blockKey} in ${chunkId}`);
     updateChunkMesh(chunkX, chunkZ, chunkData); // Update local mesh immediately
 
 
-     // Update neighbor chunks if modification is on a border
+     // Determine which neighbor chunks might need their meshes rebuilt due to boundary changes
      const localX = THREE.MathUtils.euclideanModulo(Math.floor(worldX), chunkSize);
      const localZ = THREE.MathUtils.euclideanModulo(Math.floor(worldZ), chunkSize);
+     const neighborsToUpdate = new Set(); // Use a Set to avoid duplicates
+     if (localX === 0) neighborsToUpdate.add(`${chunkX - 1},${chunkZ}`);
+     if (localX === chunkSize - 1) neighborsToUpdate.add(`${chunkX + 1},${chunkZ}`);
+     if (localZ === 0) neighborsToUpdate.add(`${chunkX},${chunkZ - 1}`);
+     if (localZ === chunkSize - 1) neighborsToUpdate.add(`${chunkX},${chunkZ + 1}`);
 
 
-     const neighborsToUpdate = [];
-     if (localX === 0) neighborsToUpdate.push({ cx: chunkX - 1, cz: chunkZ });
-     if (localX === chunkSize - 1) neighborsToUpdate.push({ cx: chunkX + 1, cz: chunkZ });
-     if (localZ === 0) neighborsToUpdate.push({ cx: chunkX, cz: chunkZ - 1 });
-     if (localZ === chunkSize - 1) neighborsToUpdate.push({ cx: chunkX, cz: chunkZ + 1 });
-
-
-     neighborsToUpdate.forEach(({ cx, cz }) => {
-         const neighborId = `${cx},${cz}`;
-         if (chunks[neighborId]) {
-             updateChunkMesh(cx, cz, chunks[neighborId]);
+     neighborsToUpdate.forEach((neighborId) => {
+         const neighborData = chunks[neighborId];
+         if (neighborData && chunkMeshCache[neighborId]) { // Update only if loaded and mesh exists
+            // console.log(`Updating neighbor mesh: ${neighborId}`);
+            const { chunkX: nx, chunkZ: nz } = getChunkCoordinatesFromId(neighborId);
+            updateChunkMesh(nx, nz, neighborData);
          }
      });
 
@@ -547,160 +663,105 @@ async function modifyBlock(worldX, worldY, worldZ, newBlock) {
         await room.collection(CHUNK_COLLECTION).update(chunkId, {
             blocks: chunkData.blocks, // Send the entire updated blocks object
         });
-        console.log(`Updated chunk ${chunkId} in DB`);
+        // console.log(`Successfully updated chunk ${chunkId} in DB`);
     } catch (error) {
         console.error(`Failed to update chunk ${chunkId} in DB:`, error);
         // Revert optimistic update
-        chunkData.blocks = oldBlocks;
-        updateChunkMesh(chunkX, chunkZ, chunkData);
-         neighborsToUpdate.forEach(({ cx, cz }) => {
-             const neighborId = `${cx},${cz}`;
-             if (chunks[neighborId]) {
-                 updateChunkMesh(cx, cz, chunks[neighborId]);
+        chunkData.blocks = oldBlocks; // Restore the entire previous block state for the chunk
+        updateChunkMesh(chunkX, chunkZ, chunkData); // Re-render the chunk with old data
+         // Also revert neighbor meshes if they were updated
+         neighborsToUpdate.forEach((neighborId) => {
+             const neighborData = chunks[neighborId];
+             if (neighborData && chunkMeshCache[neighborId]) {
+                 const { chunkX: nx, chunkZ: nz } = getChunkCoordinatesFromId(neighborId);
+                 updateChunkMesh(nx, nz, neighborData); // Rerender neighbor with its (now correct) state
              }
          });
     }
 }
 
-
 // Subscribe to chunk updates from other players
 room.collection(CHUNK_COLLECTION).subscribe((updatedChunkList) => {
-    // `getList` returns newest first, we don't necessarily need an order here
-    // but process the updates
+    // No need to sort, just process all incoming updates
     updatedChunkList.forEach(dbChunkData => {
         const chunkId = dbChunkData.id;
-        if (chunks[chunkId] && JSON.stringify(chunks[chunkId].blocks) !== JSON.stringify(dbChunkData.blocks)) {
-             console.log(`Received update for chunk: ${chunkId}`);
-             chunks[chunkId] = dbChunkData; // Update local cache
+        const localChunkData = chunks[chunkId];
 
+        // Check if the incoming data is actually different from local cache
+        // Simple JSON compare, might be slow for large chunks, consider hash comparison later
+         const hasChanged = !localChunkData || JSON.stringify(localChunkData.blocks) !== JSON.stringify(dbChunkData.blocks);
 
-             // Check if the chunk is currently rendered before updating mesh
-            if (chunkMeshCache[chunkId]) {
-                const { chunkX, chunkZ } = getChunkCoordinatesFromId(chunkId);
+        if (hasChanged) {
+             // console.log(`Received update for chunk: ${chunkId}`);
+             chunks[chunkId] = dbChunkData; // Update local cache with new data
+
+             const { chunkX, chunkZ } = getChunkCoordinatesFromId(chunkId);
+
+             // Only update mesh if the chunk is currently supposed to be visible
+            const playerChunkX = Math.floor(controls.getObject().position.x / chunkSize);
+            const playerChunkZ = Math.floor(controls.getObject().position.z / chunkSize);
+             const isVisible = Math.abs(chunkX - playerChunkX) <= renderDistance && Math.abs(chunkZ - playerChunkZ) <= renderDistance;
+
+            if (isVisible) {
+                // console.log(`Updating mesh for remotely modified visible chunk: ${chunkId}`);
                 updateChunkMesh(chunkX, chunkZ, dbChunkData);
 
-
-                 // Also update neighbors if they are rendered
+                 // Also force update neighbors if they are visible, as their geometry might depend on this chunk
                  const neighbors = [
                     `${chunkX-1},${chunkZ}`, `${chunkX+1},${chunkZ}`,
                     `${chunkX},${chunkZ-1}`, `${chunkX},${chunkZ+1}`
                  ];
                  neighbors.forEach(neighborId => {
-                     if (chunkMeshCache[neighborId]) {
-                         const {chunkX: nx, chunkZ: nz} = getChunkCoordinatesFromId(neighborId);
-                         if(chunks[neighborId]) { // Make sure neighbor data exists
-                             updateChunkMesh(nx, nz, chunks[neighborId]);
-                         }
+                      const neighborCoords = getChunkCoordinatesFromId(neighborId);
+                      const isNeighborVisible = Math.abs(neighborCoords.chunkX - playerChunkX) <= renderDistance && Math.abs(neighborCoords.chunkZ - playerChunkZ) <= renderDistance;
+                     // Update neighbor only if its data exists locally and it's currently visible
+                     if (chunks[neighborId] && isNeighborVisible) {
+                         // console.log(`Updating neighbor mesh ${neighborId} due to update in ${chunkId}`);
+                         updateChunkMesh(neighborCoords.chunkX, neighborCoords.chunkZ, chunks[neighborId]);
                      }
                  });
             }
-        } else if (!chunks[chunkId]) {
-             // Another player might have created a chunk we need
-             chunks[chunkId] = dbChunkData;
-             // Check if we should render it now based on current visibility
-            const { chunkX, chunkZ } = getChunkCoordinatesFromId(chunkId);
-            const playerChunkX = Math.floor(controls.getObject().position.x / chunkSize);
-            const playerChunkZ = Math.floor(controls.getObject().position.z / chunkSize);
-             if (Math.abs(chunkX - playerChunkX) <= renderDistance && Math.abs(chunkZ - playerChunkZ) <= renderDistance) {
-                 if (!chunkMeshCache[chunkId]) { // Avoid double rendering if updateChunkMesh was called elsewhere
-                     updateChunkMesh(chunkX, chunkZ, dbChunkData);
-                 }
-             }
         }
     });
 });
 
 function getChunkCoordinatesFromId(chunkId) {
-     const [chunkX, chunkZ] = chunkId.split(',').map(Number);
+     const parts = chunkId.split(',');
+     if (parts.length !== 2) {
+         console.error(`Invalid chunkId format: ${chunkId}`);
+         return { chunkX: 0, chunkZ: 0 }; // Return default or throw error
+     }
+     const chunkX = parseInt(parts[0], 10);
+     const chunkZ = parseInt(parts[1], 10);
+      if (isNaN(chunkX) || isNaN(chunkZ)) {
+         console.error(`Non-numeric coordinates in chunkId: ${chunkId}`);
+         return { chunkX: 0, chunkZ: 0 }; // Return default
+     }
      return { chunkX, chunkZ };
 }
 
-// Multiplayer Presence Setup
-const playerMeshes = {};
-
-function updatePlayerMesh(clientId, data) {
-    let mesh = playerMeshes[clientId];
-    if (!mesh) {
-        // Simple capsule for player representation
-        const geometry = new THREE.CapsuleGeometry(0.4, playerHeight - 0.8, 4, 8); // radius, height, capSegments, radialSegments
-        const material = new THREE.MeshStandardMaterial({ color: Math.random() * 0xffffff });
-        mesh = new THREE.Mesh(geometry, material);
-        mesh.castShadow = true;
-        scene.add(mesh);
-        playerMeshes[clientId] = mesh;
-        console.log(`Added mesh for player: ${clientId}`);
-    }
-
-    if (data && data.position) {
-         // Adjust position slightly upwards because capsule origin is at the center
-         mesh.position.set(data.position.x, data.position.y + (playerHeight / 2), data.position.z);
-    }
-    if (data && data.rotation) {
-        // Apply rotation - assuming rotation is Euler YXZ for FPS controls
-        // We only care about the Y rotation for the body typically
-         mesh.rotation.set(0, data.rotation.y, 0);
-    }
-}
-
-
-function removePlayerMesh(clientId) {
-    const mesh = playerMeshes[clientId];
-    if (mesh) {
-        scene.remove(mesh);
-        mesh.geometry.dispose();
-        mesh.material.dispose();
-        delete playerMeshes[clientId];
-         console.log(`Removed mesh for player: ${clientId}`);
-    }
-}
-
-// Subscribe to presence updates
-room.subscribePresence((presence) => {
-    const allClientIds = new Set(Object.keys(presence));
-
-    // Update existing or add new players
-    for (const clientId in presence) {
-        if (clientId === room.clientId) continue; // Don't render self
-
-        const data = presence[clientId];
-        if (!data || !data.position) {
-             // Player might have connected but not sent position yet, or disconnected abruptly
-             if (playerMeshes[clientId]) {
-                 removePlayerMesh(clientId);
-             }
-             continue;
-         }
-
-        updatePlayerMesh(clientId, data);
-    }
-
-    // Remove players who are no longer present
-    for (const existingClientId in playerMeshes) {
-        if (!allClientIds.has(existingClientId)) {
-            removePlayerMesh(existingClientId);
-        }
-    }
-});
-
-
 // Block Selector UI
 function setupBlockSelector() {
+     // Clear existing options if any
+    blockSelectorDiv.innerHTML = '';
     blockNames.forEach(name => {
         const option = document.createElement('div');
         option.classList.add('block-option');
-        option.style.background = `url(textures.png)`; // Use the main texture sheet
-
+        // option.style.background = `url(textures.png)`; // Removed texture dependency
         const blockInfo = blockTypes[name];
+        option.style.backgroundColor = `#${new THREE.Color(blockInfo.color || 0xffffff).getHexString()}`; // Use block color
+
+        /* // Texture based selector - keep commented for now
         const tileIndex = blockInfo.side; // Use the side texture for the preview
         const tilesPerRow = 4;
         const tileSizePx = 64; // Assuming texture is 256x64, each tile is 64x64
-
         const xOffset = (tileIndex % tilesPerRow) * tileSizePx;
         const yOffset = Math.floor(tileIndex / tilesPerRow) * tileSizePx;
-
         option.style.backgroundPosition = `-${xOffset}px -${yOffset}px`;
-        option.style.backgroundSize = `${tileTextureWidth}px ${tileTextureHeight}px`; // Scale appropriately if needed
+        option.style.backgroundSize = `${tileTextureWidth}px ${tileTextureHeight}px`;
+        */
 
+        option.title = name; // Add tooltip
         option.dataset.blockType = name;
         option.addEventListener('click', () => {
             selectedBlock = name;
@@ -708,7 +769,7 @@ function setupBlockSelector() {
         });
         blockSelectorDiv.appendChild(option);
     });
-    updateSelectorUI();
+    updateSelectorUI(); // Set initial selection style
 }
 
 function updateSelectorUI() {
@@ -722,39 +783,34 @@ function updateSelectorUI() {
     });
 }
 
-
 // Collision Detection Raycasters
 const downRaycaster = new THREE.Raycaster(new THREE.Vector3(), new THREE.Vector3(0, -1, 0), 0, playerHeight / 2 + 0.1);
-const collisionRays = [
-     // Forward, backward, left, right at feet and head level
-     new THREE.Raycaster(new THREE.Vector3(), new THREE.Vector3(0, 0, -1), 0, 0.5), // Forward foot
-     new THREE.Raycaster(new THREE.Vector3(), new THREE.Vector3(0, 0, 1), 0, 0.5),  // Backward foot
-     new THREE.Raycaster(new THREE.Vector3(), new THREE.Vector3(-1, 0, 0), 0, 0.5), // Left foot
-     new THREE.Raycaster(new THREE.Vector3(), new THREE.Vector3(1, 0, 0), 0, 0.5),  // Right foot
-     new THREE.Raycaster(new THREE.Vector3(), new THREE.Vector3(0, 0, -1), 0, 0.5), // Forward head
-     new THREE.Raycaster(new THREE.Vector3(), new THREE.Vector3(0, 0, 1), 0, 0.5),  // Backward head
-     new THREE.Raycaster(new THREE.Vector3(), new THREE.Vector3(-1, 0, 0), 0, 0.5), // Left head
-     new THREE.Raycaster(new THREE.Vector3(), new THREE.Vector3(1, 0, 0), 0, 0.5),  // Right head
-];
-
 
 function checkCollisions(delta) {
      const playerPosition = controls.getObject().position;
      const onGroundPrev = movement.onGround;
      movement.onGround = false;
-
+     const meshesToIntersect = Object.values(chunkMeshCache);
 
      // --- Ground Check ---
      downRaycaster.ray.origin.copy(playerPosition);
-     const groundIntersects = downRaycaster.intersectObjects(Object.values(chunkMeshCache), false);
-     if (groundIntersects.length > 0) {
-         const distanceToGround = groundIntersects[0].distance;
-         if (distanceToGround <= playerHeight / 2 + 0.1) {
-             movement.onGround = true;
-             // Snap to ground if slightly above
-             if (movement.velocity.y < 0) {
-                playerPosition.y -= (distanceToGround - playerHeight / 2);
-                 movement.velocity.y = 0;
+      downRaycaster.ray.origin.y += 0.1; // Start ray slightly above player center base
+      downRaycaster.far = playerHeight / 2 + 0.2; // Check distance below center
+
+      if (meshesToIntersect.length > 0) {
+         const groundIntersects = downRaycaster.intersectObjects(meshesToIntersect, false);
+         if (groundIntersects.length > 0) {
+             const distanceToGround = groundIntersects[0].distance;
+             const groundThreshold = playerHeight / 2 + 0.1; // How close feet need to be
+
+             if (distanceToGround <= groundThreshold) {
+                 movement.onGround = true;
+                 // Snap to ground if falling onto it
+                 if (movement.velocity.y < 0) {
+                     // Adjust position to be exactly on ground + small offset
+                     playerPosition.y -= (distanceToGround - playerHeight / 2 - 0.01);
+                     movement.velocity.y = 0; // Stop falling velocity
+                 }
              }
          }
      }
@@ -764,7 +820,7 @@ function checkCollisions(delta) {
      if (!movement.onGround) {
          movement.velocity.y += gravity * delta;
      } else {
-         // Reset downward velocity if grounded
+         // Reset downward velocity if grounded and not jumping
          movement.velocity.y = Math.max(0, movement.velocity.y);
      }
 
@@ -774,188 +830,97 @@ function checkCollisions(delta) {
          if (movement.onGround) {
              // Calculate jump velocity needed to reach jumpHeight
              movement.velocity.y = Math.sqrt(2 * jumpHeight * Math.abs(gravity));
+             movement.onGround = false; // No longer on ground after jumping
          }
          movement.jump = false; // Consume jump impulse
      }
 
 
-     // --- Horizontal Movement & Collision ---
-     // Reset velocity influencing factors
+     // --- Horizontal Movement --- (Simplified - no wall collision yet)
      movement.velocity.x -= movement.velocity.x * 10.0 * delta; // Damping
      movement.velocity.z -= movement.velocity.z * 10.0 * delta; // Damping
 
 
      movement.direction.z = Number(movement.forward) - Number(movement.backward);
      movement.direction.x = Number(movement.left) - Number(movement.right);
-     movement.direction.normalize(); // Ensure consistent speed in all directions
+     movement.direction.normalize(); // Ensure consistent speed
 
 
-     const currentSpeed = playerSpeed * (movement.onGround ? 1 : 0.5); // Slower air control
+     const currentSpeed = playerSpeed * (movement.onGround ? 1 : 0.7); // Slightly less air control
 
 
-     if (movement.forward || movement.backward) movement.velocity.z -= movement.direction.z * currentSpeed * delta;
-     if (movement.left || movement.right) movement.velocity.x -= movement.direction.x * currentSpeed * delta;
+     if (movement.forward || movement.backward) movement.velocity.z -= movement.direction.z * currentSpeed * delta * 100; // Apply speed more directly
+     if (movement.left || movement.right) movement.velocity.x -= movement.direction.x * currentSpeed * delta * 100;
 
 
-     // Get camera direction for movement
-     const cameraDirection = new THREE.Vector3();
-     controls.getDirection(cameraDirection);
-     const rightDirection = new THREE.Vector3().crossVectors(camera.up, cameraDirection).normalize();
+     // Move player based on camera direction
+     controls.moveRight(-movement.velocity.x * delta);
+     controls.moveForward(-movement.velocity.z * delta);
 
 
-     const moveForward = new THREE.Vector3(cameraDirection.x, 0, cameraDirection.z).normalize();
-     const moveRight = new THREE.Vector3(rightDirection.x, 0, rightDirection.z).normalize();
+     // Apply vertical movement (gravity/jump)
+     playerPosition.y += movement.velocity.y * delta;
 
 
-     const moveVector = new THREE.Vector3();
-     moveVector.addScaledVector(moveForward, -movement.velocity.z); // Forward/Backward
-     moveVector.addScaledVector(moveRight, -movement.velocity.x); // Left/Right
-
-
-     // --- Collision Detection during Movement ---
-     const originalPosition = playerPosition.clone();
-     const tempPosition = playerPosition.clone();
-
-
-      // Move X first, check collision
-     tempPosition.x += moveVector.x;
-     if (checkHorizontalCollision(tempPosition, moveVector.x, 0)) {
-         moveVector.x = 0; // Stop x movement if collision
-     }
-
-
-      // Move Z next, check collision
-     tempPosition.x = originalPosition.x; // Reset X for Z check
-     tempPosition.z += moveVector.z;
-     if (checkHorizontalCollision(tempPosition, 0, moveVector.z)) {
-         moveVector.z = 0; // Stop z movement if collision
-     }
-
-
-      // Apply final X and Z movement
-     controls.moveRight(-moveVector.x); // Uses camera's right internally
-     controls.moveForward(-moveVector.z); // Uses camera's forward internally
-
-
-     // Apply Y movement (gravity/jump) - check vertical collision
-     const verticalMove = movement.velocity.y * delta;
-     tempPosition.copy(controls.getObject().position); // Get current XZ pos
-     tempPosition.y += verticalMove;
-
-
-     if (checkVerticalCollision(tempPosition, verticalMove)) {
-         movement.velocity.y = 0; // Stop vertical movement
-         // Adjust position to just touch the obstacle
-         // This part needs refinement based on collision point
-     } else {
-        controls.getObject().position.y += verticalMove;
+     // Basic world bounds check (prevent falling infinitely)
+     if (playerPosition.y < -20) {
+         playerPosition.y = 100; // Respawn high up
+         playerPosition.x = 0;
+         playerPosition.z = 0;
+         movement.velocity.y = 0;
+         movement.velocity.x = 0;
+         movement.velocity.z = 0;
+         // Force chunk reload around spawn
+         chunks = {}; // Clear local chunk cache
+         Object.values(chunkMeshCache).forEach(mesh => scene.remove(mesh)); // Remove all meshes
+         chunkMeshCache = {};
+         chunkGeometryCache = {};
+         chunkLoadQueue = [];
+         isLoadingChunk = false;
+         updateVisibleChunks();
      }
 
 
      // Send presence update
-     if (Date.now() - lastPresenceUpdate > 50) { // Limit update rate
-        room.updatePresence({
-            position: { x: playerPosition.x, y: playerPosition.y - playerHeight/2 , z: playerPosition.z }, // Send base position
-            rotation: { x: camera.rotation.x, y: camera.rotation.y, z: camera.rotation.z } // Send camera rotation
-        });
-        lastPresenceUpdate = Date.now();
-    }
-}
-
-
-function checkHorizontalCollision(testPosition, moveX, moveZ) {
-    const playerHalfHeight = playerHeight / 2;
-     const collisionDistance = 0.45; // Slightly less than player radius
-
-
-     for (let i = 0; i < 8; i++) { // Check all 8 horizontal rays
-         const ray = collisionRays[i];
-         const isHeadLevel = i >= 4;
-         const originYOffset = isHeadLevel ? playerHalfHeight - 0.1 : -playerHalfHeight + 0.1; // Check near top and bottom
-
-
-         ray.ray.origin.set(testPosition.x, testPosition.y + originYOffset, testPosition.z);
-
-
-         // Set direction based on ray index (simplified)
-         if (i % 4 === 0) ray.ray.direction.set(0, 0, -1); // Forward
-         else if (i % 4 === 1) ray.ray.direction.set(0, 0, 1); // Backward
-         else if (i % 4 === 2) ray.ray.direction.set(-1, 0, 0); // Left
-         else if (i % 4 === 3) ray.ray.direction.set(1, 0, 0); // Right
-
-
-         // Only check rays relevant to the movement direction (optimization)
-         if ((moveX > 0 && i % 4 !== 3) && (moveX < 0 && i % 4 !== 2) &&
-             (moveZ > 0 && i % 4 !== 1) && (moveZ < 0 && i % 4 !== 0)) {
-             // continue; // This logic needs refinement - check relevant directions only
-         }
-
-
-         ray.far = collisionDistance;
-         const intersects = ray.intersectObjects(Object.values(chunkMeshCache), false);
-
-
-         if (intersects.length > 0 && intersects[0].distance < collisionDistance) {
-             console.log("Horizontal collision detected!");
-             return true; // Collision detected
-         }
-     }
-     return false; // No collision
-}
-
-
-function checkVerticalCollision(testPosition, moveY) {
-    // Simplified vertical check (using the ground check raycaster logic)
-    if (moveY < 0) { // Moving down
-        downRaycaster.ray.origin.copy(testPosition);
-         downRaycaster.far = playerHeight / 2 + 0.1;
-        const intersects = downRaycaster.intersectObjects(Object.values(chunkMeshCache), false);
-        if (intersects.length > 0 && intersects[0].distance < playerHeight / 2) {
-            // Collision below
-            // Adjust position to rest on the surface
-             controls.getObject().position.y = intersects[0].point.y + playerHeight / 2;
-             console.log("Vertical collision below");
-             return true;
+     if (controls.isLocked && Date.now() - lastPresenceUpdate > 50) { // Limit update rate and only when locked
+        const basePosition = { x: playerPosition.x, y: playerPosition.y - playerHeight/2 , z: playerPosition.z }; // Send base position
+        const currentRotation = { x: camera.rotation.x, y: camera.rotation.y, z: camera.rotation.z };
+        // Basic check to avoid sending redundant updates if nothing changed
+        if (JSON.stringify(basePosition) !== JSON.stringify(lastSentPosition) || JSON.stringify(currentRotation) !== JSON.stringify(lastSentRotation)) {
+             room.updatePresence({
+                position: basePosition,
+                rotation: currentRotation
+            });
+            lastPresenceUpdate = Date.now();
+            lastSentPosition = basePosition;
+            lastSentRotation = currentRotation;
         }
-    } else if (moveY > 0) { // Moving up
-         const upRaycaster = new THREE.Raycaster(testPosition, new THREE.Vector3(0, 1, 0), 0, playerHeight / 2 + 0.1);
-         upRaycaster.ray.origin.y -= playerHeight / 2; // Start from feet
-         const intersects = upRaycaster.intersectObjects(Object.values(chunkMeshCache), false);
-         if (intersects.length > 0 && intersects[0].distance < playerHeight / 2 + moveY) {
-             // Collision above (head bump)
-             // Adjust position just below the obstacle
-             controls.getObject().position.y = intersects[0].point.y - playerHeight / 2 - 0.01;
-             console.log("Vertical collision above");
-             return true;
-         }
     }
-
-
-    return false; // No vertical collision
 }
-
-
 
 let lastPresenceUpdate = 0;
+let lastSentPosition = null;
+let lastSentRotation = null;
 const clock = new THREE.Clock();
 
 // Initial setup
 setupBlockSelector();
-updateVisibleChunks(); // Initial chunk load
-
+updateVisibleChunks(); // Initial chunk load request
 
 // Animation loop
 function animate() {
     requestAnimationFrame(animate);
-    const delta = clock.getDelta();
+    const delta = Math.min(clock.getDelta(), 0.1); // Cap delta to prevent physics jumps
 
 
-    if (controls.isLocked) {
+     // Only update physics and chunks if controls are locked
+     if (controls.isLocked) {
         checkCollisions(delta); // Update player physics and movement
         updateVisibleChunks(); // Load/unload chunks based on player position
     }
 
 
+    // Always render
     renderer.render(scene, camera);
 }
 
@@ -967,5 +932,5 @@ window.addEventListener('resize', () => {
 });
 
 // Start the game loop
+console.log("Starting animation loop...");
 animate();
-
